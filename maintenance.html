@@ -3,29 +3,187 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="10">
 <title>Minigames — Deploying</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1120;color:#e6e7f0;text-align:center;padding:1rem}
-.card{max-width:440px}
-.badge{display:inline-block;padding:.35rem .75rem;border-radius:999px;background:rgba(124,92,255,.15);color:#a692ff;font-size:.75rem;letter-spacing:.15em;text-transform:uppercase;margin-bottom:1.25rem}
-h1{font-size:1.75rem;font-weight:800;letter-spacing:-.03em;margin-bottom:.75rem}
-p{color:#8f92aa;line-height:1.5;margin-bottom:.5rem}
-.sub{font-size:.8rem;color:#5f6182;margin-top:1rem}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#7c5cff;margin:0 3px;animation:pulse 1.4s ease-in-out infinite both}
-.dot:nth-child(2){animation-delay:.2s}
-.dot:nth-child(3){animation-delay:.4s}
-@keyframes pulse{0%,80%,100%{opacity:.3}40%{opacity:1}}
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f1120;
+    color: #e6e7f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 1rem;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  .badge {
+    display: inline-block;
+    padding: .35rem .75rem;
+    border-radius: 999px;
+    background: rgba(124, 92, 255, .15);
+    color: #a692ff;
+    font-size: .75rem;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+  }
+  h1 { font-size: 1.75rem; font-weight: 800; letter-spacing: -.03em; margin-bottom: .5rem; }
+  p.lede { color: #8f92aa; margin-bottom: 1.25rem; line-height: 1.5; text-align: center; }
+  canvas {
+    border: 2px solid #7c5cff;
+    border-radius: 6px;
+    display: block;
+    background: #171a2e;
+    max-width: 100%;
+  }
+  .score { color: #8f92aa; margin-top: .75rem; font-size: 1rem; }
+  .score b { color: #e6e7f0; }
+  .hint { color: #5f6182; margin-top: .5rem; font-size: .8rem; text-align: center; }
+  .status { color: #5f6182; margin-top: 1rem; font-size: .8rem; }
 </style>
 </head>
 <body>
-<div class="card">
 <div class="badge">Deploying</div>
 <h1>We'll be right back</h1>
-<p>Minigames is updating with the latest changes. This usually takes under a minute.</p>
-<p><span class="dot"></span><span class="dot"></span><span class="dot"></span></p>
-<p class="sub">This page will refresh automatically.</p>
-</div>
+<p class="lede">Minigames is updating &mdash; play some Snake while you wait.</p>
+<canvas id="game" width="300" height="300"></canvas>
+<div class="score">Score: <b id="score">0</b> &nbsp;·&nbsp; Best: <b id="best">0</b></div>
+<div class="hint">Arrow keys, WASD, or swipe to move &middot; any key to restart</div>
+<div class="status" id="status">Checking for the new version&hellip;</div>
+<script>
+(function () {
+  var CELL = 15, COLS = 20, ROWS = 20, TICK = 120;
+  var canvas = document.getElementById('game');
+  canvas.width = COLS * CELL;
+  canvas.height = ROWS * CELL;
+  var ctx = canvas.getContext('2d');
+  var scoreEl = document.getElementById('score');
+  var bestEl = document.getElementById('best');
+  var snake, dir, queued, food, score, running, timer;
+  var best = 0;
+
+  function init() {
+    clearInterval(timer);
+    snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+    dir = { x: 1, y: 0 };
+    // Turns are buffered and applied one per tick. Without this, two quick
+    // keypresses inside a single tick can fold the snake back on itself.
+    queued = [];
+    score = 0;
+    scoreEl.textContent = '0';
+    placeFood();
+    running = true;
+    timer = setInterval(tick, TICK);
+    draw();
+  }
+
+  function placeFood() {
+    do {
+      food = { x: Math.floor(Math.random() * COLS), y: Math.floor(Math.random() * ROWS) };
+    } while (snake.some(function (s) { return s.x === food.x && s.y === food.y; }));
+  }
+
+  function tick() {
+    if (!running) return;
+
+    while (queued.length) {
+      var nd = queued.shift();
+      if (nd.x + dir.x !== 0 || nd.y + dir.y !== 0) { dir = nd; break; }
+    }
+
+    var head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+    var hitWall = head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS;
+    // The tail tip vacates this tick, so it is not a collision unless we grow.
+    var hitSelf = snake.some(function (s, i) {
+      return i < snake.length - 1 && s.x === head.x && s.y === head.y;
+    });
+
+    if (hitWall || hitSelf) {
+      running = false;
+      if (score > best) { best = score; bestEl.textContent = best; }
+      ctx.fillStyle = 'rgba(15,17,32,0.75)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#7c5cff';
+      ctx.font = 'bold 20px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2);
+      return;
+    }
+
+    snake.unshift(head);
+    if (head.x === food.x && head.y === food.y) {
+      score++;
+      scoreEl.textContent = score;
+      placeFood();
+    } else {
+      snake.pop();
+    }
+    draw();
+  }
+
+  function draw() {
+    ctx.fillStyle = '#171a2e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (var i = 0; i < snake.length; i++) {
+      ctx.fillStyle = i === 0 ? '#a692ff' : '#7c5cff';
+      ctx.fillRect(snake[i].x * CELL + 1, snake[i].y * CELL + 1, CELL - 2, CELL - 2);
+    }
+    ctx.fillStyle = '#ff5c8a';
+    ctx.fillRect(food.x * CELL + 1, food.y * CELL + 1, CELL - 2, CELL - 2);
+  }
+
+  var KEY_MAP = {
+    ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 },
+    ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 },
+    w: { x: 0, y: -1 }, s: { x: 0, y: 1 }, a: { x: -1, y: 0 }, d: { x: 1, y: 0 },
+    W: { x: 0, y: -1 }, S: { x: 0, y: 1 }, A: { x: -1, y: 0 }, D: { x: 1, y: 0 }
+  };
+
+  document.addEventListener('keydown', function (e) {
+    var nd = KEY_MAP[e.key];
+    if (nd) e.preventDefault();       // stop arrow keys scrolling the page
+    if (!running) { init(); return; }
+    if (nd) queued.push(nd);
+  });
+
+  // Swipe controls for touch devices.
+  var t0 = null;
+  canvas.addEventListener('touchstart', function (e) {
+    t0 = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }, { passive: true });
+  canvas.addEventListener('touchend', function (e) {
+    if (!t0) return;
+    if (!running) { init(); t0 = null; return; }
+    var dx = e.changedTouches[0].clientX - t0.x;
+    var dy = e.changedTouches[0].clientY - t0.y;
+    if (Math.abs(dx) < 20 && Math.abs(dy) < 20) { t0 = null; return; }
+    if (Math.abs(dx) > Math.abs(dy)) queued.push({ x: dx > 0 ? 1 : -1, y: 0 });
+    else queued.push({ x: 0, y: dy > 0 ? 1 : -1 });
+    t0 = null;
+  }, { passive: true });
+
+  init();
+
+  // Poll for the app coming back instead of a meta-refresh, which would
+  // reload mid-game every few seconds. nginx serves this page with the
+  // upstream's 502 while the app is down, so a 200 means the deploy is done.
+  var statusEl = document.getElementById('status');
+  setInterval(function () {
+    fetch(window.location.pathname === '/maintenance.html' ? '/' : window.location.href, {
+      method: 'HEAD',
+      cache: 'no-store'
+    }).then(function (res) {
+      if (res.ok) {
+        statusEl.textContent = 'Back online — reloading…';
+        setTimeout(function () { window.location.reload(); }, 600);
+      }
+    }).catch(function () { /* still down; keep playing */ });
+  }, 5000);
+})();
+</script>
 </body>
 </html>

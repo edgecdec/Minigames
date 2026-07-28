@@ -20,7 +20,17 @@ export function startGame(answer: bigint, rng: () => number = Math.random): Lets
 export function randomHigher(current: bigint, rng: () => number = Math.random): bigint {
   const percent = BigInt(1 + Math.floor(rng() * 100));
   const numerator = current * (BigInt(100) + percent);
-  return (numerator + BigInt(99)) / BigInt(100);
+  const base = (numerator + BigInt(99)) / BigInt(100);
+
+  // Replace the last few digits with an independent random suffix. This keeps
+  // Lilian's number in the selected percentage range without echoing endings.
+  const suffixDigits = Math.min(3, base.toString().length);
+  const modulus = BigInt(10) ** BigInt(suffixDigits);
+  const prefix = base / modulus;
+  let result = prefix * modulus + BigInt(Math.floor(rng() * Number(modulus)));
+  if (result <= current) result += modulus;
+  if (result > current * BigInt(2)) return base;
+  return result;
 }
 
 export function milestoneFor(value: bigint): string | undefined {

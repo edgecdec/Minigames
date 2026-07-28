@@ -177,7 +177,9 @@ function generateWideMaze(
 
   // The scaled odd-sized maze may stop at (31,31); always make the finish at
   // (33,33) reachable through a short final corridor.
-  const last = 1 + (baseSize - 2) * corridorWidth;
+  // baseSize - 2 is the final interior cell; convert its zero-based block
+  // position to the corresponding board coordinate.
+  const last = 1 + (baseSize - 3) * corridorWidth;
   for (let x = Math.min(last, width - 2); x <= width - 2; x++) walls[last][x] = false;
   for (let y = Math.min(last, height - 2); y <= height - 2; y++) walls[y][width - 2] = false;
   return walls;

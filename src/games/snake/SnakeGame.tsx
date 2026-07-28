@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
+import GameSidebar, { type SidebarConfig } from "@/components/GameSidebar";
 import ScoreBar from "@/components/ScoreBar";
-import { useBestScore } from "@/lib/useLocalStorage";
+import { useBestScore, useLeaderboard, useLifetimeStats } from "@/lib/useLocalStorage";
 import {
   COLS,
   TICK_MS,
@@ -19,10 +20,29 @@ import {
 const CELL = 16;
 const BOARD_PX = COLS * CELL; // 320 — the grid is square, so this is both dimensions
 
+const COUNTERS = { games: 0, food: 0, bestLength: 0 };
+
+const SIDEBAR: SidebarConfig<typeof COUNTERS> = {
+  leaderboard: { title: "Best runs", unit: "pts" },
+  stats: {
+    rows: (c) => [
+      { label: "Games played", value: c.games },
+      { label: "Food eaten", value: c.food },
+      {
+        label: "Average score",
+        value: c.games > 0 ? (c.food / c.games).toFixed(1) : "—",
+      },
+      { label: "Longest snake", value: c.bestLength > 0 ? c.bestLength : "—" },
+    ],
+  },
+};
+
 export default function SnakeGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [state, setState] = useState<SnakeState>(() => createGame());
   const [best, submitBest, bestLoaded] = useBestScore("snake");
+  const [leaderboard, submitLeaderboard, leaderboardLoaded] = useLeaderboard("snake");
+  const [stats, bumpStats, statsLoaded] = useLifetimeStats("snake", COUNTERS);
   const [started, setStarted] = useState(false);
   // The snake holds still until the first steer. Without this, clicking Start
   // with the mouse gives you ~1.1s to reach the keyboard before hitting a wall.
@@ -52,10 +72,34 @@ export default function SnakeGame() {
     return () => clearInterval(id);
   }, [started, moving, state.dead]);
 
-  // Record the best score once per death.
+  // Record results exactly once per death. Without the ref guard this effect
+  // re-runs on unrelated re-renders and double-counts games played.
+  const recorded = useRef(false);
   useEffect(() => {
-    if (state.dead) submitBest(state.score);
-  }, [state.dead, state.score, submitBest]);
+    if (!state.dead) {
+      recorded.current = false;
+      return;
+    }
+    if (recorded.current) return;
+    recorded.current = true;
+
+    submitBest(state.score);
+    submitLeaderboard(state.score);
+    bumpStats({
+      games: 1,
+      food: state.score,
+      // bestLength is a max, not a sum — bump by the difference when beaten.
+      bestLength: Math.max(0, state.snake.length - stats.bestLength),
+    });
+  }, [
+    state.dead,
+    state.score,
+    state.snake.length,
+    stats.bestLength,
+    submitBest,
+    submitLeaderboard,
+    bumpStats,
+  ]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -214,6 +258,14 @@ export default function SnakeGame() {
           {moving ? "Don't hit the walls." : "Steer to start moving."}
         </Typography>
       )}
+
+      <GameSidebar
+        config={SIDEBAR}
+        entries={leaderboard}
+        entriesLoaded={leaderboardLoaded}
+        counters={stats}
+        countersLoaded={statsLoaded}
+      />
     </>
   );
 }

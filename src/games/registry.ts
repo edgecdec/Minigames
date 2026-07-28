@@ -40,6 +40,22 @@ export const GAMES: GameMeta[] = [
     status: "live",
   },
   {
+    slug: "double-it",
+    title: "Double It!",
+    blurb: "Double the number before the clock runs out. It keeps getting shorter.",
+    icon: "✖️",
+    controls: "Type the answer, Enter to submit",
+    status: "live",
+  },
+  {
+    slug: "rngdle",
+    title: "RNGdle",
+    blurb: "Ten rolls a day, same for everyone. Chase the golden pull.",
+    icon: "🎲",
+    controls: "Click to roll",
+    status: "live",
+  },
+  {
     slug: "bobs-big-number",
     title: "Bob's Big Number",
     blurb: "Guess Bob the Monkey's number from 1 to 1 Sextillion in 70 decreasing levels.",

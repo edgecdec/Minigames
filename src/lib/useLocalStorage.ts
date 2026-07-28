@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * localStorage-backed state, safe for SSR.
@@ -59,6 +59,47 @@ export function useBestScore(
   );
 
   return [best, submit, loaded];
+}
+
+/**
+ * Lifetime counters that persist across runs, for stats like "total flips" or
+ * "% heads" that are about the player's whole history rather than one game.
+ *
+ * Counters are added to, never replaced — `bump({ flips: 1, heads: 1 })`.
+ * Generic over the counter names so each game defines its own shape.
+ */
+export function useLifetimeStats<T extends Record<string, number>>(
+  gameSlug: string,
+  initial: T,
+): [T, (deltas: Partial<Record<keyof T, number>>) => void, boolean, () => void] {
+  const [stats, setStats, loaded] = useLocalStorage<T>(
+    `minigames:stats:${gameSlug}`,
+    initial,
+  );
+
+  // Reads the latest value via a ref so rapid successive bumps in the same tick
+  // don't each start from the same stale snapshot and lose counts.
+  const ref = useRef(stats);
+  ref.current = stats;
+
+  const bump = useCallback(
+    (deltas: Partial<Record<keyof T, number>>) => {
+      const next = { ...ref.current };
+      for (const k in deltas) {
+        const d = deltas[k as keyof T];
+        if (typeof d === "number") {
+          next[k as keyof T] = ((next[k as keyof T] ?? 0) + d) as T[keyof T];
+        }
+      }
+      ref.current = next;
+      setStats(next);
+    },
+    [setStats],
+  );
+
+  const reset = useCallback(() => setStats(initial), [setStats, initial]);
+
+  return [stats, bump, loaded, reset];
 }
 
 export interface LeaderboardEntry {

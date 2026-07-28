@@ -5,12 +5,26 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import Leaderboard from "@/components/Leaderboard";
+import GameSidebar, { percent, type SidebarConfig } from "@/components/GameSidebar";
 import ScoreBar from "@/components/ScoreBar";
-import { useBestScore, useLeaderboard } from "@/lib/useLocalStorage";
+import { useBestScore, useLeaderboard, useLifetimeStats } from "@/lib/useLocalStorage";
 import { createInitialState, flipCoin, Side, TARGET_STREAK } from "./logic";
 
 const FLIP_MS = 450;
+
+const COUNTERS = { flips: 0, heads: 0, wins: 0 };
+
+const SIDEBAR: SidebarConfig<typeof COUNTERS> = {
+  leaderboard: { title: "Longest streaks", unit: "heads" },
+  stats: {
+    rows: (c) => [
+      { label: "Total flips", value: c.flips },
+      { label: "Heads", value: c.heads, hint: percent(c.heads, c.flips) },
+      { label: "Tails", value: c.flips - c.heads, hint: percent(c.flips - c.heads, c.flips) },
+      { label: "Games won", value: c.wins },
+    ],
+  },
+};
 
 export default function CoinFlippersGame() {
   const [state, setState] = useState(createInitialState);
@@ -19,6 +33,7 @@ export default function CoinFlippersGame() {
   const [best, submitBest, bestLoaded] = useBestScore("coin-flippers");
   const [leaderboard, submitLeaderboard, leaderboardLoaded] =
     useLeaderboard("coin-flippers");
+  const [stats, bumpStats, statsLoaded] = useLifetimeStats("coin-flippers", COUNTERS);
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -32,7 +47,12 @@ export default function CoinFlippersGame() {
 
     timer.current = setTimeout(() => {
       setState((prev) => {
-        const { nextState, endedStreak } = flipCoin(prev);
+        const { nextState, side, endedStreak } = flipCoin(prev);
+        bumpStats({
+          flips: 1,
+          heads: side === "H" ? 1 : 0,
+          wins: nextState.result === "win" ? 1 : 0,
+        });
         if (endedStreak !== undefined && endedStreak > 0) {
           submitBest(endedStreak);
           submitLeaderboard(endedStreak);
@@ -41,7 +61,7 @@ export default function CoinFlippersGame() {
       });
       setFlipping(false);
     }, FLIP_MS);
-  }, [flipping, state.result, submitBest, submitLeaderboard]);
+  }, [flipping, state.result, submitBest, submitLeaderboard, bumpStats]);
 
   const reset = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -164,14 +184,13 @@ export default function CoinFlippersGame() {
         )}
       </Box>
 
-      <Box sx={{ width: "100%", mt: 2 }}>
-        <Leaderboard
-          entries={leaderboard}
-          title="Coin Flippers Leaderboard"
-          unit="heads"
-          loaded={leaderboardLoaded}
-        />
-      </Box>
+      <GameSidebar
+        config={SIDEBAR}
+        entries={leaderboard}
+        entriesLoaded={leaderboardLoaded}
+        counters={stats}
+        countersLoaded={statsLoaded}
+      />
     </>
   );
 }

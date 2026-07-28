@@ -1,14 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
 import ScoreBar from "@/components/ScoreBar";
 import { useBestScore } from "@/lib/useLocalStorage";
 import {
   COLS,
-  ROWS,
   TICK_MS,
   createGame,
   dirForKey,
@@ -19,6 +17,7 @@ import {
 } from "./logic";
 
 const CELL = 16;
+const BOARD_PX = COLS * CELL; // 320 — the grid is square, so this is both dimensions
 
 export default function SnakeGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,6 +27,8 @@ export default function SnakeGame() {
   // The snake holds still until the first steer. Without this, clicking Start
   // with the mouse gives you ~1.1s to reach the keyboard before hitting a wall.
   const [moving, setMoving] = useState(false);
+  // Bumped after a resize so the draw effect re-runs against the new transform.
+  const [redraw, setRedraw] = useState(0);
 
   // The tick reads state via ref so the interval doesn't need re-creating
   // on every frame (which would reset the timer and stutter the snake).
@@ -75,6 +76,34 @@ export default function SnakeGame() {
     return () => window.removeEventListener("keydown", onKey);
   }, [started, reset, turn]);
 
+  // Size the drawing buffer to the element's real size × DPR, then scale the
+  // context so all drawing below can stay in CSS/grid units.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    function resize() {
+      const el = canvasRef.current;
+      if (!el) return;
+      const dpr = window.devicePixelRatio || 1;
+      const cssSize = el.clientWidth || BOARD_PX;
+      el.width = Math.round(cssSize * dpr);
+      el.height = Math.round(cssSize * dpr);
+      const ctx = el.getContext("2d");
+      // Map 1 unit == 1 CSS px, and CSS px == BOARD_PX across the board, so the
+      // grid math is identical regardless of how wide the element actually is.
+      ctx?.setTransform(
+        (cssSize / BOARD_PX) * dpr, 0, 0,
+        (cssSize / BOARD_PX) * dpr, 0, 0,
+      );
+      setRedraw((n) => n + 1);
+    }
+
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+
   // Draw
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -83,7 +112,7 @@ export default function SnakeGame() {
     if (!ctx) return;
 
     ctx.fillStyle = "#171a2e";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, BOARD_PX, BOARD_PX);
 
     state.snake.forEach((s, i) => {
       ctx.fillStyle = i === 0 ? "#a692ff" : "#7c5cff";
@@ -95,14 +124,14 @@ export default function SnakeGame() {
 
     if (state.dead || !started || !moving) {
       ctx.fillStyle = "rgba(15,17,32,0.78)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, BOARD_PX, BOARD_PX);
       ctx.fillStyle = "#e6e7f0";
       ctx.textAlign = "center";
       ctx.font = "bold 22px -apple-system, system-ui, sans-serif";
       ctx.fillText(
         state.dead ? "Game Over" : started ? "Steer to begin" : "Ready?",
-        canvas.width / 2,
-        canvas.height / 2 - 6,
+        BOARD_PX / 2,
+        BOARD_PX / 2 - 6,
       );
       ctx.fillStyle = "#8f92aa";
       ctx.font = "13px -apple-system, system-ui, sans-serif";
@@ -112,11 +141,11 @@ export default function SnakeGame() {
           : started
             ? "Arrow keys, WASD, or swipe"
             : "Press any key to start",
-        canvas.width / 2,
-        canvas.height / 2 + 18,
+        BOARD_PX / 2,
+        BOARD_PX / 2 + 18,
       );
     }
-  }, [state, started, moving]);
+  }, [state, started, moving, redraw]);
 
   // Swipe controls
   const touchStart = useRef<{ x: number; y: number } | null>(null);
@@ -149,20 +178,26 @@ export default function SnakeGame() {
         ]}
       />
 
-      <Box
-        component="canvas"
+      {/*
+        Plain <canvas>, not <Box component="canvas">: MUI treats width/height as
+        style props, so the drawing buffer silently kept its 300x150 default and
+        the lower rows were drawn outside the visible area.
+        aspectRatio + flexShrink:0 keep it square inside the column flex parent.
+      */}
+      <canvas
         ref={canvasRef}
-        width={COLS * CELL}
-        height={ROWS * CELL}
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
-        sx={{
-          border: "2px solid",
-          borderColor: "primary.main",
-          borderRadius: 1.5,
+        style={{
+          border: "2px solid #7c5cff",
+          borderRadius: 6,
+          width: BOARD_PX,
           maxWidth: "100%",
+          aspectRatio: "1 / 1",
           height: "auto",
+          flexShrink: 0,
           touchAction: "none",
+          display: "block",
         }}
       />
 

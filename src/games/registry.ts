@@ -20,6 +20,14 @@ export interface GameMeta {
   /** How you play, shown in the game's own header. */
   controls: string;
   status: GameStatus;
+  /**
+   * This game scores its own runs on the server and owns its submit endpoint.
+   *
+   * The shared /api/leaderboard POST refuses these outright — otherwise the
+   * generic "here is my score, please believe me" path would sit alongside the
+   * authoritative one and quietly undo it.
+   */
+  serverScored?: boolean;
 }
 
 export const GAMES: GameMeta[] = [
@@ -78,6 +86,7 @@ export const GAMES: GameMeta[] = [
     icon: "🎧",
     controls: "Drag the ribbon, arrow keys to nudge, Enter to lock in",
     status: "live",
+    serverScored: true,
   },
   {
     slug: "bobs-big-number",

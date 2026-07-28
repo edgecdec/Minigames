@@ -130,6 +130,11 @@ console edit from perfect. Its `pendingScore` is deliberately `null`. Don't
 "simplify" it back onto the shared prompt — `src/games/perfect-pitch/mask.ts`
 and `trajectory.ts` explain what that would give away.
 
+Such a game sets `serverScored: true` in the registry, and the shared
+`POST /api/leaderboard` refuses it with a 403. That flag is load-bearing: a
+server-authoritative endpoint is worth nothing while a generic
+"here is my score" route still accepts the same game.
+
 Games where cheating means writing a bot do not need any of this. Use the
 shared board.
 

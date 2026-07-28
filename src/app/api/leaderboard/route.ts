@@ -55,8 +55,19 @@ export async function POST(req: Request) {
   const { game, name, score } = body as Record<string, unknown>;
 
   const slug = typeof game === "string" ? game : "";
-  if (!getGame(slug)) {
+  const meta = getGame(slug);
+  if (!meta) {
     return NextResponse.json({ error: "Unknown game" }, { status: 400 });
+  }
+
+  // Some games score their runs on the server and own their own submit
+  // endpoint. Accepting a client-supplied score for one of those here would
+  // hand back exactly the hole that endpoint exists to close.
+  if (meta.serverScored) {
+    return NextResponse.json(
+      { error: "This game submits its scores through its own endpoint" },
+      { status: 403 },
+    );
   }
 
   const nameResult = cleanName(name);

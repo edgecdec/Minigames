@@ -220,6 +220,20 @@ async function main() {
   check("...but the statistics still refuse it a ranked place", botSubmit.data.verified === false,
     `flags: ${(botSubmit.data.flags ?? []).join(", ")}`);
 
+  // --- 13. the shared endpoint must not offer a way around all of this -------
+  {
+    const res = await fetch(`${BASE}/api/leaderboard`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game: "perfect-pitch", name: "Bypass", score: 5000 }),
+    });
+    check(
+      "the generic leaderboard endpoint refuses this game",
+      res.status === 403,
+      `HTTP ${res.status} - otherwise every check above is bypassable`,
+    );
+  }
+
   console.log("");
   const failed = results.filter((r) => !r.pass);
   console.log(`${results.length - failed.length}/${results.length} checks passed`);

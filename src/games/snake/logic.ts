@@ -160,68 +160,24 @@ function generateWideMaze(
   const walls: boolean[][] = Array.from({ length: height }, () =>
     Array(width).fill(true),
   );
-  const targetX = width - 2;
-  const targetY = height - 2;
-  const step = corridorWidth + 1;
-  const xAnchors = [1];
-  const yAnchors = [1];
-
-  while (xAnchors[xAnchors.length - 1] + step < targetX) {
-    xAnchors.push(xAnchors[xAnchors.length - 1] + step);
-  }
-  if (xAnchors[xAnchors.length - 1] !== targetX) xAnchors.push(targetX);
-  while (yAnchors[yAnchors.length - 1] + step < targetY) {
-    yAnchors.push(yAnchors[yAnchors.length - 1] + step);
-  }
-  if (yAnchors[yAnchors.length - 1] !== targetY) yAnchors.push(targetY);
-
-  const visited = yAnchors.map(() => xAnchors.map(() => false));
-  const stack: { x: number; y: number }[] = [{ x: 0, y: 0 }];
-  visited[0][0] = true;
-  const carveRoom = (x: number, y: number) => {
-    for (let dy = 0; dy < corridorWidth; dy++) {
-      for (let dx = 0; dx < corridorWidth; dx++) {
-        if (y + dy < height - 1 && x + dx < width - 1) walls[y + dy][x + dx] = false;
-      }
+  // Generate a normal dense maze first, then scale each cell into a square
+  // passage. This preserves the wall structure instead of filling the board.
+  let baseSize = Math.floor((width - 2) / corridorWidth) + 1;
+  if (baseSize % 2 === 0) baseSize -= 1;
+  const base = generateMaze(baseSize, baseSize, rng);
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const baseX = Math.min(Math.floor((x - 1) / corridorWidth), baseSize - 1);
+      const baseY = Math.min(Math.floor((y - 1) / corridorWidth), baseSize - 1);
+      walls[y][x] = base[baseY][baseX];
     }
-  };
-  carveRoom(1, 1);
-
-  while (stack.length) {
-    const current = stack[stack.length - 1];
-    const neighbors: { x: number; y: number }[] = [];
-    for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-      const x = current.x + dx;
-      const y = current.y + dy;
-      if (x >= 0 && x < xAnchors.length && y >= 0 && y < yAnchors.length && !visited[y][x]) {
-        neighbors.push({ x, y });
-      }
-    }
-    if (!neighbors.length) {
-      stack.pop();
-      continue;
-    }
-    const next = neighbors[Math.floor(rng() * neighbors.length)];
-    const fromX = xAnchors[current.x];
-    const fromY = yAnchors[current.y];
-    const toX = xAnchors[next.x];
-    const toY = yAnchors[next.y];
-    carveRoom(toX, toY);
-    if (fromX !== toX) {
-      const left = Math.min(fromX, toX);
-      for (let y = fromY; y < fromY + corridorWidth; y++) {
-        for (let x = left; x < Math.max(fromX, toX) + corridorWidth; x++) walls[y][x] = false;
-      }
-    } else {
-      const top = Math.min(fromY, toY);
-      for (let y = top; y < Math.max(fromY, toY) + corridorWidth; y++) {
-        for (let x = fromX; x < fromX + corridorWidth; x++) walls[y][x] = false;
-      }
-    }
-    visited[next.y][next.x] = true;
-    stack.push(next);
   }
 
+  // The scaled odd-sized maze may stop at (31,31); always make the finish at
+  // (33,33) reachable through a short final corridor.
+  const last = 1 + (baseSize - 1) * corridorWidth;
+  for (let x = Math.min(last, width - 2); x <= width - 2; x++) walls[last][x] = false;
+  for (let y = Math.min(last, height - 2); y <= height - 2; y++) walls[y][width - 2] = false;
   return walls;
 }
 

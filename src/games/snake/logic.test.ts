@@ -98,6 +98,9 @@ console.log("Running Snake logic tests...");
   assert(getMazeCorridorWidth(1) === 3, "Early maze corridors are 3 cells wide");
   assert(getMazeCorridorWidth(3) === 2, "Faster maze corridors narrow to 2 cells");
   assert(game.food.x === -1 && game.food.y === -1, "Maze has no food objective");
+  const wallCount = game.walls.flat().filter(Boolean).length;
+  assert(wallCount > 250, `Wide maze retains visible walls (got ${wallCount})`);
+  assert(canReach(game.walls, { x: 1, y: 1 }, game.exit), "Wide maze reaches finish");
 
   const level3Speed = getTickMsForLevel(3);
   assert(level3Speed === 164, `Level 3 speed is 164ms (got ${level3Speed})`);

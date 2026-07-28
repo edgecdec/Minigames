@@ -1,9 +1,11 @@
 "use client";
 
 import Stack from "@mui/material/Stack";
+import GlobalLeaderboard from "@/components/GlobalLeaderboard";
 import Leaderboard from "@/components/Leaderboard";
 import StatsPanel, { type StatRow } from "@/components/StatsPanel";
 import type { LeaderboardEntry } from "@/lib/useLocalStorage";
+import type { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 
 /**
  * Declarative config for a game's leaderboard + lifetime stats.
@@ -26,6 +28,15 @@ export interface SidebarConfig<T extends Record<string, number>> {
     title?: string;
     rows: (counters: T) => StatRow[];
   };
+  /**
+   * Server-backed board shared by all players. Omit to keep a game local-only.
+   * The `unit` here is separate from the local board's so a game can label
+   * them differently if it needs to.
+   */
+  global?: {
+    title?: string;
+    unit?: string;
+  };
 }
 
 export default function GameSidebar<T extends Record<string, number>>({
@@ -34,18 +45,38 @@ export default function GameSidebar<T extends Record<string, number>>({
   entriesLoaded,
   counters,
   countersLoaded,
+  global: globalBoard,
+  pendingScore,
 }: {
   config: SidebarConfig<T>;
   entries?: LeaderboardEntry[];
   entriesLoaded?: boolean;
   counters?: T;
   countersLoaded?: boolean;
+  /** Pass the whole useGlobalLeaderboard(slug) result through. */
+  global?: ReturnType<typeof useGlobalLeaderboard>;
+  /** A finished run's score, awaiting submission. */
+  pendingScore?: number | null;
 }) {
   const statRows =
     config.stats && counters ? config.stats.rows(counters) : [];
 
   return (
     <Stack spacing={2} sx={{ width: "100%", mt: 2 }}>
+      {config.global && globalBoard ? (
+        <GlobalLeaderboard
+          entries={globalBoard.entries}
+          me={globalBoard.me}
+          loading={globalBoard.loading}
+          error={globalBoard.error}
+          name={globalBoard.name}
+          title={config.global.title}
+          unit={config.global.unit}
+          pendingScore={pendingScore}
+          onSubmit={globalBoard.submit}
+        />
+      ) : null}
+
       {config.leaderboard && entries ? (
         <Leaderboard
           entries={entries}

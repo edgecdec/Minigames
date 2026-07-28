@@ -8,6 +8,7 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import GameSidebar, { percent, type SidebarConfig } from "@/components/GameSidebar";
+import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 import ScoreBar from "@/components/ScoreBar";
 import { useBestScore, useLeaderboard, useLifetimeStats } from "@/lib/useLocalStorage";
 import { useCountdown } from "@/lib/useCountdown";
@@ -17,6 +18,7 @@ const COUNTERS = { runs: 0, rounds: 0, correct: 0, wrong: 0, timeouts: 0 };
 
 const SIDEBAR: SidebarConfig<typeof COUNTERS> = {
   leaderboard: { title: "Best runs", unit: "rounds" },
+  global: { unit: "rounds" },
   stats: {
     rows: (c) => [
       { label: "Runs played", value: c.runs },
@@ -44,6 +46,7 @@ export default function DoubleItGame() {
   const [best, submitBest, bestLoaded] = useBestScore("double-it");
   const [leaderboard, submitLeaderboard, leaderboardLoaded] = useLeaderboard("double-it");
   const [stats, bumpStats, statsLoaded] = useLifetimeStats("double-it", COUNTERS);
+  const globalBoard = useGlobalLeaderboard("double-it");
 
   const handleExpire = useCallback(() => {
     setState((s) => timeOut(s));
@@ -201,6 +204,8 @@ export default function DoubleItGame() {
         entriesLoaded={leaderboardLoaded}
         counters={stats}
         countersLoaded={statsLoaded}
+        global={globalBoard}
+        pendingScore={dead ? score(state) : null}
       />
     </>
   );

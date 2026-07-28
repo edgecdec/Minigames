@@ -7,6 +7,7 @@ import Chip from "@mui/material/Chip";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import GameSidebar, { percent, type SidebarConfig } from "@/components/GameSidebar";
+import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 import ScoreBar from "@/components/ScoreBar";
 import { useBestScore, useLeaderboard, useLifetimeStats, useLocalStorage } from "@/lib/useLocalStorage";
 import { dailyRng, msUntilTomorrow, todayKey } from "@/lib/dailySeed";
@@ -31,6 +32,7 @@ const COUNTERS = {
 
 const SIDEBAR: SidebarConfig<typeof COUNTERS> = {
   leaderboard: { title: "Best days", unit: "pts" },
+  global: { title: "Best days worldwide", unit: "pts" },
   stats: {
     rows: (c) => [
       { label: "Days played", value: c.days },
@@ -98,6 +100,7 @@ export default function RngdleGame() {
   const [best, submitBest, bestLoaded] = useBestScore("rngdle");
   const [leaderboard, submitLeaderboard, leaderboardLoaded] = useLeaderboard("rngdle");
   const [stats, bumpStats, statsLoaded] = useLifetimeStats("rngdle", COUNTERS);
+  const globalBoard = useGlobalLeaderboard("rngdle");
 
   // The whole day's sequence is deterministic; we just reveal a prefix of it.
   const allRolls = useMemo(
@@ -229,6 +232,8 @@ export default function RngdleGame() {
         entriesLoaded={leaderboardLoaded}
         counters={stats}
         countersLoaded={statsLoaded}
+        global={globalBoard}
+        pendingScore={done ? dayScore(allRolls.slice(0, DAILY_ROLLS)) : null}
       />
     </>
   );

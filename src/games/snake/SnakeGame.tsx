@@ -7,6 +7,7 @@ import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import GameSidebar, { type SidebarConfig } from "@/components/GameSidebar";
+import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 import ScoreBar from "@/components/ScoreBar";
 import { useBestScore, useLeaderboard, useLifetimeStats } from "@/lib/useLocalStorage";
 import {
@@ -26,6 +27,7 @@ const COUNTERS = { games: 0, food: 0, bestLength: 0 };
 
 const SIDEBAR: SidebarConfig<typeof COUNTERS> = {
   leaderboard: { title: "Best runs", unit: "pts" },
+  global: { unit: "pts" },
   stats: {
     rows: (c) => [
       { label: "Games played", value: c.games },
@@ -47,6 +49,7 @@ export default function SnakeGame() {
   const [bestMaze, submitBestMaze, bestMazeLoaded] = useBestScore("snake_maze");
   const [leaderboard, submitLeaderboard, leaderboardLoaded] = useLeaderboard("snake");
   const [stats, bumpStats, statsLoaded] = useLifetimeStats("snake", COUNTERS);
+  const globalBoard = useGlobalLeaderboard("snake");
   const bestScore = mode === "classic" ? bestClassic : bestMaze;
   const bestLoaded = mode === "classic" ? bestClassicLoaded : bestMazeLoaded;
   const submitBest = mode === "classic" ? submitBestClassic : submitBestMaze;

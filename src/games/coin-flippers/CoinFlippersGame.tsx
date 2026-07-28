@@ -6,6 +6,7 @@ import Button from "@mui/material/Button";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import GameSidebar, { percent, type SidebarConfig } from "@/components/GameSidebar";
+import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 import ScoreBar from "@/components/ScoreBar";
 import { useBestScore, useLeaderboard, useLifetimeStats } from "@/lib/useLocalStorage";
 import { createInitialState, flipCoin, Side, TARGET_STREAK } from "./logic";
@@ -16,6 +17,7 @@ const COUNTERS = { flips: 0, heads: 0, wins: 0 };
 
 const SIDEBAR: SidebarConfig<typeof COUNTERS> = {
   leaderboard: { title: "Longest streaks", unit: "heads" },
+  global: { title: "Longest streaks worldwide", unit: "heads" },
   stats: {
     rows: (c) => [
       { label: "Total flips", value: c.flips },
@@ -34,6 +36,7 @@ export default function CoinFlippersGame() {
   const [leaderboard, submitLeaderboard, leaderboardLoaded] =
     useLeaderboard("coin-flippers");
   const [stats, bumpStats, statsLoaded] = useLifetimeStats("coin-flippers", COUNTERS);
+  const globalBoard = useGlobalLeaderboard("coin-flippers");
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -190,6 +193,8 @@ export default function CoinFlippersGame() {
         entriesLoaded={leaderboardLoaded}
         counters={stats}
         countersLoaded={statsLoaded}
+        global={globalBoard}
+        pendingScore={state.result === "win" ? state.streak : null}
       />
     </>
   );

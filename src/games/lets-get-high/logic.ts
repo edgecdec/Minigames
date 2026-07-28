@@ -16,12 +16,11 @@ export function startGame(answer: bigint, rng: () => number = Math.random): Lets
   return { status: "playing", current: randomHigher(answer, rng), rounds: 0, lastAnswer: answer, milestone: milestoneFor(answer) };
 }
 
-/** Produces a playful, unpredictable raise while always staying exact and higher. */
+/** Raises the player's number by a random 1%–100%, always rounding up. */
 export function randomHigher(current: bigint, rng: () => number = Math.random): bigint {
-  const digits = current.toString().length;
-  const scale = BigInt(10) ** BigInt(Math.max(0, digits - 1));
-  const raise = BigInt(1 + Math.floor(rng() * 900)) * scale;
-  return current + raise;
+  const percent = BigInt(1 + Math.floor(rng() * 100));
+  const numerator = current * (BigInt(100) + percent);
+  return (numerator + BigInt(99)) / BigInt(100);
 }
 
 export function milestoneFor(value: bigint): string | undefined {

@@ -28,7 +28,7 @@ import { useToneSynth } from "@/lib/useToneSynth";
 import OnlineSubmit from "./OnlineSubmit";
 import PitchStats from "./PitchStats";
 import RoundReveal from "./RoundReveal";
-import { useOnlineRun } from "./useOnlineRun";
+import { revealTone, useOnlineRun } from "./useOnlineRun";
 import RunSummary from "./RunSummary";
 import SoundSettings from "./SoundSettings";
 import TuningRibbon from "./TuningRibbon";
@@ -156,10 +156,11 @@ export default function PerfectPitchGame() {
   // same three things: the guesses so far, and the current round's target and
   // starting position.
   const activeGuesses = isOnline ? online.guesses : (run?.guesses ?? []);
+  // Null in ranked play, and that's the point: the answer is decoded straight
+  // into the oscillator and never kept anywhere a breakpoint could find it.
+  // Only the offline run, which the browser owns anyway, holds its targets.
   const activeTargetCents = isOnline
-    ? onlineRound
-      ? centsAtHz(onlineRound.targetHz)
-      : null
+    ? null
     : (run?.targetCents[roundIndex] ?? null);
   const activeStartCents = isOnline
     ? (onlineRound?.startCents ?? null)
@@ -269,7 +270,8 @@ export default function PerfectPitchGame() {
     synth.setWaveform(waveform);
     synth.setVolume(volume);
 
-    let targetCents: number;
+    let toneHz: number;
+    let targetCents: number | null;
     let startCents: number;
 
     if (isOnline) {
@@ -278,13 +280,16 @@ export default function PerfectPitchGame() {
       const served =
         onlineRound ?? (await resumeOnline()) ?? (await startOnline());
       if (!served) return; // the hook has already dropped us to offline
-      targetCents = centsAtHz(served.targetHz);
+      // Decoded here and used immediately. Nothing keeps it.
+      toneHz = revealTone(served.sealed);
+      targetCents = null;
       startCents = served.startCents;
       serverRoundIndexRef.current = served.index;
     } else {
       if (!run) return;
       setSaved({ run, armed: true });
       targetCents = run.targetCents[roundIndex];
+      toneHz = hzAtCents(targetCents);
       startCents = run.startCents[roundIndex];
     }
 
@@ -294,7 +299,7 @@ export default function PerfectPitchGame() {
     clearTimers();
     listenStartRef.current = performance.now();
     setPhase("listen");
-    synth.start(hzAtCents(targetCents), TONE_FADE_IN_MS);
+    synth.start(toneHz, TONE_FADE_IN_MS);
     startCountdown(LISTEN_MS);
     // The ring runs on animation frames, which stop in a background tab. This
     // backstop is what actually guarantees the tone ends after four seconds.
@@ -353,7 +358,9 @@ export default function PerfectPitchGame() {
     if (phaseRef.current !== "guess") return;
     const targetCents = targetCentsRef.current;
     const startCents = startCentsRef.current;
-    if (targetCents === null || startCents === null) return;
+    // Ranked play has no local target by design — the server scores it.
+    if (startCents === null) return;
+    if (!isOnline && targetCents === null) return;
 
     const huntMs = Math.round(performance.now() - huntStartRef.current);
     const trace = downsample(trajectoryRef.current, TRAJECTORY_SAMPLES);
@@ -384,7 +391,7 @@ export default function PerfectPitchGame() {
         return;
       }
     } else {
-      if (!run) return;
+      if (!run || targetCents === null) return;
       guess = scoreGuess(targetCents, guessCentsRef.current, {
         listenMs,
         huntMs,

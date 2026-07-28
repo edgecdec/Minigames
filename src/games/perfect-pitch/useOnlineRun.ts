@@ -2,7 +2,8 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useLocalStorage } from "@/lib/useLocalStorage";
-import { type Guess, type Waveform } from "./logic";
+import { type Guess, type Waveform, hzAtCents } from "./logic";
+import { type MaskedRound, roundKey, unmaskCents } from "./mask";
 import { type TrajectoryFeatures, type TrajectoryPoint } from "./trajectory";
 import { SLUG } from "./shared";
 
@@ -20,10 +21,19 @@ import { SLUG } from "./shared";
 
 const RUN_ID_KEY = `minigames:${SLUG}:onlineRunId`;
 
+/**
+ * A round as the client holds it: still masked.
+ *
+ * Deliberately NOT unmasked on arrival. The decode happens at the moment the
+ * oscillator is started and the result is never assigned to anything that
+ * outlives that call, so there is no `targetCents` sitting in component state
+ * for a breakpoint to land on.
+ */
 export interface ServedRound {
   index: number;
-  targetHz: number;
   startCents: number;
+  /** Opaque; feed to `revealTone` when it's time to make a sound. */
+  sealed: { s: string; m: number; i: number; runId: string };
 }
 
 export interface SubmitOutcome {
@@ -46,6 +56,25 @@ export interface GuessSubmission {
   features: TrajectoryFeatures;
   startCents: number;
   waveform: Waveform;
+}
+
+/**
+ * Turns a sealed round into a frequency, at the last possible moment.
+ *
+ * Call this inline as the argument to the synth — never store what it returns.
+ */
+export function revealTone(sealed: ServedRound["sealed"]): number {
+  return hzAtCents(
+    unmaskCents(sealed.m, roundKey(sealed.runId, sealed.s, sealed.i)),
+  );
+}
+
+function seal(runId: string, raw: MaskedRound): ServedRound {
+  return {
+    index: raw.i,
+    startCents: raw.sc,
+    sealed: { s: raw.s, m: raw.m, i: raw.i, runId },
+  };
 }
 
 async function call(payload: Record<string, unknown>) {
@@ -92,10 +121,12 @@ export function useOnlineRun() {
         return null;
       }
       setAvailable(true);
-      setStoredRunId(data.runId as string);
+      const runId = data.runId as string;
+      setStoredRunId(runId);
       setGuesses([]);
-      setRound(data.round as ServedRound);
-      return data.round as ServedRound;
+      const served = seal(runId, data.round as MaskedRound);
+      setRound(served);
+      return served;
     } catch {
       fail("Could not reach the server", true);
       return null;
@@ -122,8 +153,9 @@ export function useOnlineRun() {
         return null;
       }
       setAvailable(true);
-      setRound(data.round as ServedRound);
-      return data.round as ServedRound;
+      const served = seal(runId, data.round as MaskedRound);
+      setRound(served);
+      return served;
     } catch {
       fail("Could not reach the server", true);
       return null;
@@ -180,7 +212,8 @@ export function useOnlineRun() {
         };
 
         setGuesses((prev) => [...prev, guess]);
-        setRound((data.next as ServedRound | null) ?? null);
+        const next = data.next as MaskedRound | null;
+        setRound(next ? seal(runId, next) : null);
         setError(null);
         return guess;
       } catch {

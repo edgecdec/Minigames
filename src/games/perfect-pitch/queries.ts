@@ -15,6 +15,7 @@ import {
   roundFlags,
   runFlags,
 } from "./trajectory";
+import { DECOY_COUNT, type MaskedRound, maskCents, roundKey } from "./mask";
 
 /**
  * Server-side run state for Perfect Pitch. SERVER ONLY — imports the database.
@@ -58,11 +59,8 @@ const MAX_SOFT_FLAGS = 2;
 /** The trajectory must actually agree with the guess it came with. */
 const TRAJECTORY_TOLERANCE_CENTS = 2;
 
-export interface ServedRound {
-  index: number;
-  targetHz: number;
-  startCents: number;
-}
+/** What a client is allowed to know about the round it's playing. */
+export type ServedRound = MaskedRound;
 
 export interface RoundOutcome {
   index: number;
@@ -185,7 +183,13 @@ function loadRun(runId: unknown, userId: string): RunRow {
   return row;
 }
 
-/** Marks a round as served and returns what the client is allowed to know. */
+/**
+ * Marks a round as served and returns what the client is allowed to know.
+ *
+ * The target goes out masked and surrounded by decoys. It still reaches the
+ * browser — it has to, to be played — but it isn't sitting in the network tab
+ * under a helpful name. See mask.ts for why that's the honest limit.
+ */
 function serveRound(runId: string, index: number, now: number): ServedRound {
   const db = getDb();
   const row = db
@@ -200,10 +204,19 @@ function serveRound(runId: string, index: number, now: number): ServedRound {
   db.prepare(`UPDATE pp_round SET served_at = ? WHERE run_id = ? AND idx = ?`)
     .run(now, runId, index);
 
+  const salt = crypto.randomBytes(4).toString("hex");
+  const key = roundKey(runId, salt, row.idx);
+
   return {
-    index: row.idx,
-    targetHz: hzAtCents(row.target_cents),
-    startCents: row.start_cents,
+    i: row.idx,
+    s: salt,
+    m: maskCents(row.target_cents, key),
+    // Drawn from the same range as the real value, so counting bits or
+    // eyeballing magnitudes doesn't single it out.
+    n: Array.from({ length: DECOY_COUNT }, () =>
+      maskCents(sampleTargetCents(), crypto.randomBytes(4).readUInt32BE(0)),
+    ),
+    sc: row.start_cents,
   };
 }
 

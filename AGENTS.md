@@ -123,6 +123,16 @@ migrations/
   transaction, and pragmas can't.
 - The database is snapshotted to `data/backups/` before any migration batch.
 
+**One game does not use the shared submit path, on purpose.** Perfect Pitch
+issues and scores its rounds server-side (`src/app/api/perfect-pitch/`), because
+the answer to that game *is* a number and a client-posted score would be one
+console edit from perfect. Its `pendingScore` is deliberately `null`. Don't
+"simplify" it back onto the shared prompt — `src/games/perfect-pitch/mask.ts`
+and `trajectory.ts` explain what that would give away.
+
+Games where cheating means writing a bot do not need any of this. Use the
+shared board.
+
 **Own your namespace.** If you do add tables, prefix them with your game's slug
 — `pp_run`, `snake_maze_seed`. With many contributors this is the only thing
 standing between two games that both wanted a table called `attempts`.

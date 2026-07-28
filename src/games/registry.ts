@@ -26,7 +26,7 @@ export const GAMES: GameMeta[] = [
   {
     slug: "lets-get-high",
     title: "Let's Get High",
-    blurb: "Name a number. Bob names a higher one. Keep climbing forever.",
+    blurb: "Name a number. Lilian names a higher one. Keep climbing forever.",
     icon: "🚀",
     controls: "Type a positive whole number, Enter to submit",
     status: "live",

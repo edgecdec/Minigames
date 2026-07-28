@@ -100,6 +100,9 @@ console.log("Running Snake logic tests...");
   assert(game.food.x === -1 && game.food.y === -1, "Maze has no food objective");
   const wallCount = game.walls.flat().filter(Boolean).length;
   assert(wallCount > 250, `Wide maze retains visible walls (got ${wallCount})`);
+  assert(!game.walls[1][1], "Maze start is open");
+  assert(!game.walls[1][2], "Snake can make its first move from the start");
+  assert(!game.walls[33][33], "Maze finish is open");
   assert(canReach(game.walls, { x: 1, y: 1 }, game.exit), "Wide maze reaches finish");
 
   const level3Speed = getTickMsForLevel(3);

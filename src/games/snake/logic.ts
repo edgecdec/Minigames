@@ -167,15 +167,17 @@ function generateWideMaze(
   const base = generateMaze(baseSize, baseSize, rng);
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
-      const baseX = Math.min(Math.floor((x - 1) / corridorWidth), baseSize - 1);
-      const baseY = Math.min(Math.floor((y - 1) / corridorWidth), baseSize - 1);
+      // Keep the generator's one-cell outer border intact while mapping the
+      // playable start cell (1,1) to the generator's open cell (1,1).
+      const baseX = Math.min(1 + Math.floor((x - 1) / corridorWidth), baseSize - 1);
+      const baseY = Math.min(1 + Math.floor((y - 1) / corridorWidth), baseSize - 1);
       walls[y][x] = base[baseY][baseX];
     }
   }
 
   // The scaled odd-sized maze may stop at (31,31); always make the finish at
   // (33,33) reachable through a short final corridor.
-  const last = 1 + (baseSize - 1) * corridorWidth;
+  const last = 1 + (baseSize - 2) * corridorWidth;
   for (let x = Math.min(last, width - 2); x <= width - 2; x++) walls[last][x] = false;
   for (let y = Math.min(last, height - 2); y <= height - 2; y++) walls[y][width - 2] = false;
   return walls;

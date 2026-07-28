@@ -121,6 +121,54 @@ export function useLifetimeStats<T extends Record<string, number>>(
   return [stats, bump, loaded, reset];
 }
 
+/**
+ * An append-only log of past events — every guess, every run, every attempt.
+ *
+ * Distinct from useLifetimeStats, which only keeps running totals. Games that
+ * want to chart a history rather than print a number need the raw rows, so
+ * this keeps them, oldest first, capped so a heavy player can't fill up the
+ * origin's storage quota.
+ *
+ * `append` and `clear` are stable for the component's lifetime, same contract
+ * as the hooks above — both the entries and the cap are read through refs, so
+ * recording an entry never changes the callback's identity.
+ */
+export function useHistoryLog<T>(
+  key: string,
+  cap = 2000,
+): [T[], (entry: T) => void, boolean, () => void] {
+  const [entries, setEntries, loaded] = useLocalStorage<T[]>(
+    `minigames:history:${key}`,
+    [],
+  );
+
+  // Same trick as useLifetimeStats: several appends in one tick must not each
+  // start from the same stale snapshot.
+  const ref = useRef(entries);
+  ref.current = entries;
+  const capRef = useRef(cap);
+  capRef.current = cap;
+
+  const append = useCallback(
+    (entry: T) => {
+      const limit = capRef.current;
+      const next = [...ref.current, entry];
+      const trimmed =
+        next.length > limit ? next.slice(next.length - limit) : next;
+      ref.current = trimmed;
+      setEntries(trimmed);
+    },
+    [setEntries],
+  );
+
+  const clear = useCallback(() => {
+    ref.current = [];
+    setEntries([]);
+  }, [setEntries]);
+
+  return [entries, append, loaded, clear];
+}
+
 export interface LeaderboardEntry {
   id: string;
   score: number;

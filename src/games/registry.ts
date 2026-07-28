@@ -64,6 +64,14 @@ export const GAMES: GameMeta[] = [
     status: "live",
   },
   {
+    slug: "perfect-pitch",
+    title: "Perfect Pitch",
+    blurb: "Hear a tone once, then hunt it down across three octaves. Headphones help.",
+    icon: "🎧",
+    controls: "Drag the ribbon, arrow keys to nudge, Enter to lock in",
+    status: "live",
+  },
+  {
     slug: "bobs-big-number",
     title: "Bob's Big Number",
     blurb: "Guess Bob the Monkey's number from 1 to 1 Sextillion in 70 decreasing levels.",

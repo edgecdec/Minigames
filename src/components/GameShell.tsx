@@ -18,15 +18,18 @@ export default function GameShell({
   controls,
   children,
   footer,
+  maxWidth = "sm",
 }: {
   title: string;
   icon: string;
   controls: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  /** Widen for games that need room — a board, a chart grid. Default "sm". */
+  maxWidth?: "xs" | "sm" | "md" | "lg";
 }) {
   return (
-    <Container maxWidth="sm">
+    <Container maxWidth={maxWidth}>
       <Box sx={{ minHeight: "100vh", py: 3, display: "flex", flexDirection: "column" }}>
         <Button
           component={Link}

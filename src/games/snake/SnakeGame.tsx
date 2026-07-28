@@ -83,6 +83,10 @@ export default function SnakeGame() {
     return () => clearInterval(id);
   }, [started, moving, state.dead, state.wonRound, state.tickMs]);
 
+  // Mirrors stats.bestLength so the recording effect below need not depend on it.
+  const bestLenRef = useRef(stats.bestLength);
+  bestLenRef.current = stats.bestLength;
+
   // Record results exactly once per death. Without the ref guard this effect
   // re-runs on unrelated re-renders and double-counts games played.
   const recorded = useRef(false);
@@ -102,13 +106,14 @@ export default function SnakeGame() {
       games: 1,
       food: state.score,
       // bestLength is a max, not a sum — bump by the difference when beaten.
-      bestLength: Math.max(0, state.snake.length - stats.bestLength),
+      // Read through a ref: depending on stats.bestLength directly would make
+      // this effect depend on a value its own bumpStats changes.
+      bestLength: Math.max(0, state.snake.length - bestLenRef.current),
     });
   }, [
     state.dead,
     state.score,
     state.snake.length,
-    stats.bestLength,
     submitBestClassic,
     submitLeaderboard,
     bumpStats,

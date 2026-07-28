@@ -41,21 +41,31 @@ export function useLocalStorage<T>(
   return [value, set, loaded];
 }
 
-/** Tracks a personal best, only writing when the new score actually beats it. */
+/**
+ * Tracks a personal best, only writing when the new score actually beats it.
+ *
+ * `submit` is stable for the component's lifetime — safe to put in an effect's
+ * dependency array. It reads the current best through a ref instead of closing
+ * over it, so beating your best doesn't change the callback's identity.
+ */
 export function useBestScore(
   gameSlug: string,
 ): [number, (score: number) => boolean, boolean] {
   const [best, setBest, loaded] = useLocalStorage(`minigames:best:${gameSlug}`, 0);
 
+  const bestRef = useRef(best);
+  bestRef.current = best;
+
   const submit = useCallback(
     (score: number) => {
-      if (score > best) {
+      if (score > bestRef.current) {
+        bestRef.current = score;
         setBest(score);
         return true;
       }
       return false;
     },
-    [best, setBest],
+    [setBest],
   );
 
   return [best, submit, loaded];
@@ -67,6 +77,10 @@ export function useBestScore(
  *
  * Counters are added to, never replaced — `bump({ flips: 1, heads: 1 })`.
  * Generic over the counter names so each game defines its own shape.
+ *
+ * `bump` and `reset` are stable for the lifetime of the component, so putting
+ * them in an effect's dependency array can never cause a re-render loop — even
+ * if `initial` is passed as an inline object literal.
  */
 export function useLifetimeStats<T extends Record<string, number>>(
   gameSlug: string,
@@ -76,6 +90,11 @@ export function useLifetimeStats<T extends Record<string, number>>(
     `minigames:stats:${gameSlug}`,
     initial,
   );
+
+  // Snapshot `initial` once. Without this, a caller passing an inline object
+  // (`useLifetimeStats("x", { a: 0 })`) gets a new reference every render, which
+  // makes `reset` unstable and can loop any effect that depends on it.
+  const initialRef = useRef(initial);
 
   // Reads the latest value via a ref so rapid successive bumps in the same tick
   // don't each start from the same stale snapshot and lose counts.
@@ -97,7 +116,7 @@ export function useLifetimeStats<T extends Record<string, number>>(
     [setStats],
   );
 
-  const reset = useCallback(() => setStats(initial), [setStats, initial]);
+  const reset = useCallback(() => setStats(initialRef.current), [setStats]);
 
   return [stats, bump, loaded, reset];
 }
@@ -109,7 +128,15 @@ export interface LeaderboardEntry {
   name?: string;
 }
 
-/** Tracks a top-N leaderboard for a game in localStorage. */
+/**
+ * Tracks a top-N leaderboard for a game in localStorage.
+ *
+ * `addScore` and `clearLeaderboard` are stable for the component's lifetime, so
+ * they are safe to list in an effect's dependency array. Reading `entries`
+ * through a ref rather than closing over it is what keeps `addScore` stable —
+ * otherwise every recorded score changes its identity and any effect depending
+ * on it fires again, writing another score, forever.
+ */
 export function useLeaderboard(
   gameSlug: string,
   maxEntries = 5,
@@ -118,6 +145,11 @@ export function useLeaderboard(
     `minigames:leaderboard:${gameSlug}`,
     [],
   );
+
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const maxRef = useRef(maxEntries);
+  maxRef.current = maxEntries;
 
   const addScore = useCallback(
     (score: number, name?: string) => {
@@ -133,17 +165,18 @@ export function useLeaderboard(
         ...(name ? { name } : {}),
       };
 
-      const updated = [...entries, newEntry]
+      const updated = [...entriesRef.current, newEntry]
         .sort((a, b) => b.score - a.score)
-        .slice(0, maxEntries);
+        .slice(0, maxRef.current);
 
       const madeBoard = updated.some((e) => e.id === newEntry.id);
       if (madeBoard) {
+        entriesRef.current = updated;
         setEntries(updated);
       }
       return madeBoard;
     },
-    [entries, maxEntries, setEntries],
+    [setEntries],
   );
 
   const clearLeaderboard = useCallback(() => {

@@ -128,15 +128,21 @@ export default function RngdleGame() {
   }, [done, revealing, savedLoaded, allRolls, taken, day, setSaved, bumpStats]);
 
   // Record the day once its rolls are spent.
+  //
+  // Deliberately does NOT depend on `revealed`: that array is rebuilt every
+  // render, so listing it here makes the effect re-fire after its own bumpStats
+  // triggers a re-render — an unbounded write loop (measured at ~1.5k writes/s
+  // when the ref guard was removed). The score is recomputed from `allRolls`,
+  // which is memoised, and the ref guard makes it once-per-day regardless.
   const recorded = useRef<string | null>(null);
   useEffect(() => {
     if (!savedLoaded || !done || recorded.current === day) return;
     recorded.current = day;
-    const s = dayScore(revealed);
+    const s = dayScore(allRolls.slice(0, DAILY_ROLLS));
     submitBest(s);
     submitLeaderboard(s);
     bumpStats({ days: 1 });
-  }, [savedLoaded, done, day, revealed, submitBest, submitLeaderboard, bumpStats]);
+  }, [savedLoaded, done, day, allRolls, submitBest, submitLeaderboard, bumpStats]);
 
   // "Next puzzle in" countdown, once the day is spent.
   useEffect(() => {

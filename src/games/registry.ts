@@ -39,6 +39,14 @@ export const GAMES: GameMeta[] = [
     controls: "Click, Space, or Enter to flip",
     status: "live",
   },
+  {
+    slug: "bobs-big-number",
+    title: "Bob's Big Number",
+    blurb: "Guess Bob the Monkey's number from 1 to 1 Sextillion in 70 decreasing levels.",
+    icon: "🐵",
+    controls: "Type a guess or use Split Difference for binary search",
+    status: "live",
+  },
 ];
 
 export function getGame(slug: string): GameMeta | undefined {

@@ -6,7 +6,13 @@ import Button from "@mui/material/Button";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import { createGame, submit, type LetsGetHighState } from "./logic";
+import GameSidebar, { type SidebarConfig } from "@/components/GameSidebar";
+import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
+import { createGame, score, submit, type LetsGetHighState } from "./logic";
+
+const SIDEBAR: SidebarConfig<Record<string, number>> = {
+  global: { title: "Longest climbs", unit: "rounds" },
+};
 
 const TAUNTS = ["Your turn, number wizard!", "I’ll raise you!", "Beat that, big brain!", "The number must go up!", "No ceiling. No fear."];
 
@@ -44,6 +50,7 @@ function numberFontSize(value: bigint): string {
 
 export default function LetsGetHighGame() {
   const [state, setState] = useState<LetsGetHighState>(() => createGame());
+  const globalBoard = useGlobalLeaderboard("lets-get-high");
   const [answer, setAnswer] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const [taunt, setTaunt] = useState(TAUNTS[0]);
@@ -74,5 +81,10 @@ export default function LetsGetHighGame() {
       {lost ? <Button variant="contained" onClick={reset}>Try again</Button> : <Stack direction="row" spacing={1} sx={{ width: "100%", maxWidth: 520 }}><TextField inputRef={inputRef} fullWidth value={answer} onChange={(e) => setAnswer(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }} placeholder="Type any positive whole number" autoComplete="off" inputProps={{ inputMode: "numeric", "aria-label": "Your number" }} /><Button variant="contained" onClick={onSubmit} disabled={parseAnswer(answer) === null}>Go!</Button></Stack>}
       {state.status === "waiting" && <Typography variant="caption" color="text.secondary">No decimals. No negatives. No ceiling.</Typography>}
     </Stack>
+    <GameSidebar
+      config={SIDEBAR}
+      global={globalBoard}
+      pendingScore={lost ? score(state) : null}
+    />
   </>;
 }

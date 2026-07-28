@@ -17,7 +17,14 @@ import ReplayIcon from "@mui/icons-material/Replay";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 
 import ScoreBar from "@/components/ScoreBar";
+import GameSidebar, { type SidebarConfig } from "@/components/GameSidebar";
+import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 import { useBestScore } from "@/lib/useLocalStorage";
+
+// Scored by deepest level reached, not by the guessed number.
+const SIDEBAR: SidebarConfig<Record<string, number>> = {
+  global: { title: "Deepest levels", unit: "lvl" },
+};
 import {
   BobsBigNumberState,
   MAX_LEVEL,
@@ -69,6 +76,7 @@ const ASCII_BOB: Record<BobExpression, { speech: string; monkey: string }> = {
 
 export default function BobsBigNumberGame() {
   const [bestLevel, setBestLevel, loadedBest] = useBestScore("bobs-big-number");
+  const globalBoard = useGlobalLeaderboard("bobs-big-number");
   const [state, setState] = useState<BobsBigNumberState>(() => createInitialState({ level: 1 }));
   const [inputValue, setInputValue] = useState("");
   const [inputError, setInputError] = useState("");
@@ -429,6 +437,13 @@ export default function BobsBigNumberGame() {
           </CardContent>
         </Card>
       )}
+
+      <GameSidebar
+        config={SIDEBAR}
+        global={globalBoard}
+        // Post on a cleared level; the level number IS the score.
+        pendingScore={state.status === "won" ? state.level : null}
+      />
     </Stack>
   );
 }

@@ -13,7 +13,9 @@ import HeadphonesIcon from "@mui/icons-material/Headphones";
 import LockIcon from "@mui/icons-material/Lock";
 import TuneIcon from "@mui/icons-material/Tune";
 import CountdownRing from "@/components/CountdownRing";
+import GameSidebar, { type SidebarConfig } from "@/components/GameSidebar";
 import ScoreBar from "@/components/ScoreBar";
+import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 import { useCountdown } from "@/lib/useCountdown";
 import {
   useBestScore,
@@ -43,6 +45,10 @@ import {
 } from "./logic";
 
 const SLUG = "perfect-pitch";
+
+const SIDEBAR: SidebarConfig<Record<string, number>> = {
+  global: { unit: "pts" },
+};
 const RUN_KEY = "minigames:run:perfect-pitch";
 
 /** Phase one. Long enough to take the tone in, short enough that you can't
@@ -89,6 +95,7 @@ export default function PerfectPitchGame() {
     400,
   );
   const [best, submitBest] = useBestScore(SLUG);
+  const globalBoard = useGlobalLeaderboard(SLUG);
 
   const run = saved?.run ?? null;
   const roundIndex = run ? Math.min(run.guesses.length, ROUNDS - 1) : 0;
@@ -501,6 +508,14 @@ export default function PerfectPitchGame() {
           </Box>
         </Collapse>
       </Box>
+
+      <GameSidebar
+        config={SIDEBAR}
+        global={globalBoard}
+        pendingScore={
+          phase === "summary" && run ? Math.round(runScore) : null
+        }
+      />
     </Stack>
   );
 }

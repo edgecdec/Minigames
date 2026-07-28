@@ -385,6 +385,8 @@ export default function SnakeGame() {
           entriesLoaded={leaderboardLoaded}
           counters={stats}
           countersLoaded={statsLoaded}
+          global={globalBoard}
+          pendingScore={state.dead ? state.score : null}
         />
       )}
     </>

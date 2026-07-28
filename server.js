@@ -45,14 +45,35 @@ function migrateDatabase() {
   } catch (err) {
     globalThis.__minigamesDbError = err.message;
     console.error("=".repeat(72));
-    console.error("DATABASE MIGRATION FAILED — database-backed features are off");
+    console.error("DATABASE MIGRATION FAILED - database-backed features are off");
     console.error(err);
     console.error("=".repeat(72));
   }
 }
 
+/**
+ * Leaderboards sign an anonymous id cookie, and identity.js refuses to fall
+ * back to a guessable key. Without a secret the failure is nasty to diagnose:
+ * a first-time visitor sees a working (empty) board, then every submission
+ * 500s, and once any cookie exists the board itself 500s too. Say so at boot,
+ * where it's actually visible.
+ */
+function checkLeaderboardConfig() {
+  if (process.env.SESSION_SECRET || process.env.WEBHOOK_SECRET) return;
+  console.warn("=".repeat(72));
+  // ASCII only: this goes to a pm2 log and a Windows console, neither of
+  // which reliably renders anything fancier.
+  console.warn("SESSION_SECRET is not set - global leaderboards will NOT work.");
+  console.warn("Scores can't be submitted and the board 500s for anyone with");
+  console.warn("a saved cookie. Set SESSION_SECRET (any value locally):");
+  console.warn("    SESSION_SECRET=local-dev npm run dev");
+  console.warn("Everything else on the site works normally.");
+  console.warn("=".repeat(72));
+}
+
 app.prepare().then(() => {
   migrateDatabase();
+  checkLeaderboardConfig();
 
   const server = createServer((req, res) => {
     const parsedUrl = parse(req.url, true);

@@ -25,6 +25,9 @@ export default function SnakeGame() {
   const [state, setState] = useState<SnakeState>(() => createGame());
   const [best, submitBest, bestLoaded] = useBestScore("snake");
   const [started, setStarted] = useState(false);
+  // The snake holds still until the first steer. Without this, clicking Start
+  // with the mouse gives you ~1.1s to reach the keyboard before hitting a wall.
+  const [moving, setMoving] = useState(false);
 
   // The tick reads state via ref so the interval doesn't need re-creating
   // on every frame (which would reset the timer and stutter the snake).
@@ -34,17 +37,19 @@ export default function SnakeGame() {
   const reset = useCallback(() => {
     setState(createGame());
     setStarted(true);
+    setMoving(false);
   }, []);
 
   const turn = useCallback((dir: Dir) => {
+    setMoving(true);
     setState((s) => queueTurn(s, dir));
   }, []);
 
   useEffect(() => {
-    if (!started || state.dead) return;
+    if (!started || !moving || state.dead) return;
     const id = setInterval(() => setState((s) => step(s)), TICK_MS);
     return () => clearInterval(id);
-  }, [started, state.dead]);
+  }, [started, moving, state.dead]);
 
   // Record the best score once per death.
   useEffect(() => {
@@ -88,26 +93,30 @@ export default function SnakeGame() {
     ctx.fillStyle = "#ff5c8a";
     ctx.fillRect(state.food.x * CELL + 1, state.food.y * CELL + 1, CELL - 2, CELL - 2);
 
-    if (state.dead || !started) {
+    if (state.dead || !started || !moving) {
       ctx.fillStyle = "rgba(15,17,32,0.78)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#e6e7f0";
       ctx.textAlign = "center";
       ctx.font = "bold 22px -apple-system, system-ui, sans-serif";
       ctx.fillText(
-        state.dead ? "Game Over" : "Ready?",
+        state.dead ? "Game Over" : started ? "Steer to begin" : "Ready?",
         canvas.width / 2,
         canvas.height / 2 - 6,
       );
       ctx.fillStyle = "#8f92aa";
       ctx.font = "13px -apple-system, system-ui, sans-serif";
       ctx.fillText(
-        state.dead ? "Press any key to play again" : "Press any key to start",
+        state.dead
+          ? "Press any key to play again"
+          : started
+            ? "Arrow keys, WASD, or swipe"
+            : "Press any key to start",
         canvas.width / 2,
         canvas.height / 2 + 18,
       );
     }
-  }, [state, started]);
+  }, [state, started, moving]);
 
   // Swipe controls
   const touchStart = useRef<{ x: number; y: number } | null>(null);
@@ -118,10 +127,11 @@ export default function SnakeGame() {
     const t0 = touchStart.current;
     touchStart.current = null;
     if (!t0) return;
-    if (!started || state.dead) {
+    if (state.dead) {
       reset();
       return;
     }
+    if (!started) setStarted(true);
     const dx = e.changedTouches[0].clientX - t0.x;
     const dy = e.changedTouches[0].clientY - t0.y;
     if (Math.abs(dx) < 20 && Math.abs(dy) < 20) return;
@@ -166,7 +176,7 @@ export default function SnakeGame() {
         </Button>
       ) : (
         <Typography variant="caption" color="text.secondary">
-          Don&apos;t hit the walls.
+          {moving ? "Don't hit the walls." : "Steer to start moving."}
         </Typography>
       )}
     </>

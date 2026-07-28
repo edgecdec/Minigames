@@ -20,7 +20,8 @@ export const TICK_MS = 120;
 
 export const MAZE_COLS = 35;
 export const MAZE_ROWS = 35;
-export const MAZE_INITIAL_TICK_MS = 130;
+export const MAZE_INITIAL_TICK_MS = 180;
+export const MAZE_MIN_TICK_MS = 70;
 const NO_FOOD: Cell = { x: -1, y: -1 };
 
 export interface SnakeState {
@@ -70,8 +71,13 @@ export function dirForKey(key: string): Dir | undefined {
 export function generateMaze(
   cols: number,
   rows: number,
-  rng: () => number = Math.random
+  rng: () => number = Math.random,
+  corridorWidth = 1,
 ): boolean[][] {
+  if (corridorWidth > 1) {
+    return generateWideMaze(cols, rows, corridorWidth, rng);
+  }
+
   const width = cols % 2 === 0 ? cols + 1 : cols;
   const height = rows % 2 === 0 ? rows + 1 : rows;
 
@@ -138,6 +144,87 @@ export function generateMaze(
   return walls;
 }
 
+/**
+ * Generate a maze whose passages occupy 2 or 3 cells. The logical maze uses
+ * one-cell walls between wide rooms, keeping the map readable while leaving
+ * enough room for Snake to turn around.
+ */
+function generateWideMaze(
+  cols: number,
+  rows: number,
+  corridorWidth: number,
+  rng: () => number,
+): boolean[][] {
+  const width = cols % 2 === 0 ? cols + 1 : cols;
+  const height = rows % 2 === 0 ? rows + 1 : rows;
+  const walls: boolean[][] = Array.from({ length: height }, () =>
+    Array(width).fill(true),
+  );
+  const targetX = width - 2;
+  const targetY = height - 2;
+  const step = corridorWidth + 1;
+  const xAnchors = [1];
+  const yAnchors = [1];
+
+  while (xAnchors[xAnchors.length - 1] + step < targetX) {
+    xAnchors.push(xAnchors[xAnchors.length - 1] + step);
+  }
+  if (xAnchors[xAnchors.length - 1] !== targetX) xAnchors.push(targetX);
+  while (yAnchors[yAnchors.length - 1] + step < targetY) {
+    yAnchors.push(yAnchors[yAnchors.length - 1] + step);
+  }
+  if (yAnchors[yAnchors.length - 1] !== targetY) yAnchors.push(targetY);
+
+  const visited = yAnchors.map(() => xAnchors.map(() => false));
+  const stack: { x: number; y: number }[] = [{ x: 0, y: 0 }];
+  visited[0][0] = true;
+  const carveRoom = (x: number, y: number) => {
+    for (let dy = 0; dy < corridorWidth; dy++) {
+      for (let dx = 0; dx < corridorWidth; dx++) {
+        if (y + dy < height - 1 && x + dx < width - 1) walls[y + dy][x + dx] = false;
+      }
+    }
+  };
+  carveRoom(1, 1);
+
+  while (stack.length) {
+    const current = stack[stack.length - 1];
+    const neighbors: { x: number; y: number }[] = [];
+    for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const x = current.x + dx;
+      const y = current.y + dy;
+      if (x >= 0 && x < xAnchors.length && y >= 0 && y < yAnchors.length && !visited[y][x]) {
+        neighbors.push({ x, y });
+      }
+    }
+    if (!neighbors.length) {
+      stack.pop();
+      continue;
+    }
+    const next = neighbors[Math.floor(rng() * neighbors.length)];
+    const fromX = xAnchors[current.x];
+    const fromY = yAnchors[current.y];
+    const toX = xAnchors[next.x];
+    const toY = yAnchors[next.y];
+    carveRoom(toX, toY);
+    if (fromX !== toX) {
+      const left = Math.min(fromX, toX);
+      for (let y = fromY; y < fromY + corridorWidth; y++) {
+        for (let x = left; x < Math.max(fromX, toX) + corridorWidth; x++) walls[y][x] = false;
+      }
+    } else {
+      const top = Math.min(fromY, toY);
+      for (let y = top; y < Math.max(fromY, toY) + corridorWidth; y++) {
+        for (let x = fromX; x < fromX + corridorWidth; x++) walls[y][x] = false;
+      }
+    }
+    visited[next.y][next.x] = true;
+    stack.push(next);
+  }
+
+  return walls;
+}
+
 /** Deterministic food placement so tests can inject their own RNG. */
 export function placeFood(snake: Cell[], rng: () => number = Math.random): Cell {
   return placeFoodOnBoard(snake, COLS, ROWS, undefined, rng);
@@ -163,7 +250,11 @@ function placeFoodOnBoard(
 }
 
 export function getTickMsForLevel(level: number): number {
-  return Math.max(45, MAZE_INITIAL_TICK_MS - (level - 1) * 7);
+  return Math.max(MAZE_MIN_TICK_MS, MAZE_INITIAL_TICK_MS - (level - 1) * 8);
+}
+
+export function getMazeCorridorWidth(level: number): 2 | 3 {
+  return level <= 2 ? 3 : 2;
 }
 
 export function createGame(rng?: () => number): SnakeState;
@@ -185,7 +276,7 @@ export function createGame(
   if (mode === "maze") {
     const cols = MAZE_COLS;
     const rows = MAZE_ROWS;
-    const walls = generateMaze(cols, rows, random);
+    const walls = generateMaze(cols, rows, random, getMazeCorridorWidth(level));
     const exit = { x: cols - 2, y: rows - 2 };
 
     const snake: Cell[] = [

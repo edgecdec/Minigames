@@ -3,6 +3,7 @@ import {
   createGame,
   DIRS,
   generateMaze,
+  getMazeCorridorWidth,
   getTickMsForLevel,
   MAZE_COLS,
   MAZE_ROWS,
@@ -93,11 +94,13 @@ console.log("Running Snake logic tests...");
   assert(game.mode === "maze", "Maze mode created");
   assert(game.cols === MAZE_COLS && game.rows === MAZE_ROWS, "35x35 grid");
   assert(game.level === 1, "Level 1");
-  assert(game.tickMs === 130, "Level 1 tickMs is 130");
+  assert(game.tickMs === 180, "Level 1 tickMs is 180");
+  assert(getMazeCorridorWidth(1) === 3, "Early maze corridors are 3 cells wide");
+  assert(getMazeCorridorWidth(3) === 2, "Faster maze corridors narrow to 2 cells");
   assert(game.food.x === -1 && game.food.y === -1, "Maze has no food objective");
 
   const level3Speed = getTickMsForLevel(3);
-  assert(level3Speed === 116, `Level 3 speed is 116ms (got ${level3Speed})`);
+  assert(level3Speed === 164, `Level 3 speed is 164ms (got ${level3Speed})`);
 }
 
 // Test 4: Wall collision in Maze mode

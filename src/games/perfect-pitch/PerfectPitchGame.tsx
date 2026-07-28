@@ -8,6 +8,8 @@ import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
 import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import HeadphonesIcon from "@mui/icons-material/Headphones";
 import LockIcon from "@mui/icons-material/Lock";
@@ -23,8 +25,10 @@ import {
   useLocalStorage,
 } from "@/lib/useLocalStorage";
 import { useToneSynth } from "@/lib/useToneSynth";
+import OnlineSubmit from "./OnlineSubmit";
 import PitchStats from "./PitchStats";
 import RoundReveal from "./RoundReveal";
+import { useOnlineRun } from "./useOnlineRun";
 import RunSummary from "./RunSummary";
 import SoundSettings from "./SoundSettings";
 import TuningRibbon from "./TuningRibbon";
@@ -40,6 +44,7 @@ import {
   type Waveform,
   MIN_HZ,
   ROUNDS,
+  centsAtHz,
   createRun,
   hzAtCents,
   isRunComplete,
@@ -74,6 +79,22 @@ const MAX_TRAJECTORY_SAMPLES = 800;
 const TRAJECTORY_SAMPLES = 48;
 
 type Phase = "idle" | "listen" | "gap" | "guess" | "reveal" | "summary";
+
+/**
+ * Online runs are scored by the server, one round at a time, and are the only
+ * ones eligible for the global board. Offline runs never touch the network and
+ * never leave this browser.
+ */
+type Mode = "online" | "offline";
+
+/** Device-level input hint. Not identifying, and it answers whether phone
+ *  players are at a disadvantage on a ribbon this narrow. */
+function coarsePointer(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(pointer: coarse)").matches === true
+  );
+}
 
 interface SavedRun {
   run: RunState;
@@ -110,8 +131,51 @@ export default function PerfectPitchGame() {
   const [best, submitBest] = useBestScore(SLUG);
   const globalBoard = useGlobalLeaderboard(SLUG);
 
+  const [mode, setMode] = useLocalStorage<Mode>(`minigames:${SLUG}:mode`, "online");
+  const online = useOnlineRun();
+  const {
+    round: onlineRound,
+    available: onlineAvailable,
+    busy: onlineBusy,
+    error: onlineError,
+    start: startOnline,
+    resume: resumeOnline,
+    submitGuess: submitOnlineGuess,
+    submitToBoard,
+    reset: resetOnline,
+  } = online;
+
+  // A server that can't take runs shouldn't take the game with it: fall back
+  // to offline play rather than showing an error where the game should be.
+  const isOnline = mode === "online" && onlineAvailable !== false;
+
   const run = saved?.run ?? null;
   const roundIndex = run ? Math.min(run.guesses.length, ROUNDS - 1) : 0;
+
+  // Whichever source is driving this run, the rest of the component sees the
+  // same three things: the guesses so far, and the current round's target and
+  // starting position.
+  const activeGuesses = isOnline ? online.guesses : (run?.guesses ?? []);
+  const activeTargetCents = isOnline
+    ? onlineRound
+      ? centsAtHz(onlineRound.targetHz)
+      : null
+    : (run?.targetCents[roundIndex] ?? null);
+  const activeStartCents = isOnline
+    ? (onlineRound?.startCents ?? null)
+    : (run?.startCents[roundIndex] ?? null);
+  const activeComplete = activeGuesses.length >= ROUNDS;
+
+  // Mirrored into refs so the phase callbacks can read the current round
+  // without listing two more changing values in every dependency array.
+  const targetCentsRef = useRef<number | null>(null);
+  targetCentsRef.current = activeTargetCents;
+  const startCentsRef = useRef<number | null>(null);
+  startCentsRef.current = activeStartCents;
+  // Which round the server thinks we're on. Sent back with the guess so a
+  // retry can't be applied to the wrong one.
+  const serverRoundIndexRef = useRef(0);
+  if (onlineRound) serverRoundIndexRef.current = onlineRound.index;
 
   const guessCentsRef = useRef(0);
   const listenStartRef = useRef(0);
@@ -184,8 +248,8 @@ export default function PerfectPitchGame() {
 
     clearTimers();
     after(TONE_FADE_OUT_MS + GAP_MS, () => {
-      if (!run) return;
-      const start = run.startCents[roundIndex];
+      const start = startCentsRef.current;
+      if (start === null) return;
       guessCentsRef.current = start;
       synth.start(hzAtCents(start), TONE_FADE_IN_MS);
       huntStartRef.current = performance.now();
@@ -194,23 +258,43 @@ export default function PerfectPitchGame() {
       trajectoryRef.current = [{ t: 0, cents: start }];
       setPhase("guess");
     });
-  }, [after, clearTimers, run, roundIndex, setPhase, synth]);
+  }, [after, clearTimers, setPhase, synth]);
 
   const countdown = useCountdown(finishListening);
   stopCountdownRef.current = countdown.stop;
 
   const startCountdown = countdown.start;
   const beginRound = useCallback(async () => {
-    if (!run) return;
     await synth.resume();
     synth.setWaveform(waveform);
     synth.setVolume(volume);
 
-    setSaved({ run, armed: true });
+    let targetCents: number;
+    let startCents: number;
+
+    if (isOnline) {
+      // Round N+1 only exists once round N has been answered, so the server is
+      // asked for it here rather than a run being planned up front.
+      const served =
+        onlineRound ?? (await resumeOnline()) ?? (await startOnline());
+      if (!served) return; // the hook has already dropped us to offline
+      targetCents = centsAtHz(served.targetHz);
+      startCents = served.startCents;
+      serverRoundIndexRef.current = served.index;
+    } else {
+      if (!run) return;
+      setSaved({ run, armed: true });
+      targetCents = run.targetCents[roundIndex];
+      startCents = run.startCents[roundIndex];
+    }
+
+    targetCentsRef.current = targetCents;
+    startCentsRef.current = startCents;
+
     clearTimers();
     listenStartRef.current = performance.now();
     setPhase("listen");
-    synth.start(hzAtCents(run.targetCents[roundIndex]), TONE_FADE_IN_MS);
+    synth.start(hzAtCents(targetCents), TONE_FADE_IN_MS);
     startCountdown(LISTEN_MS);
     // The ring runs on animation frames, which stop in a background tab. This
     // backstop is what actually guarantees the tone ends after four seconds.
@@ -219,11 +303,15 @@ export default function PerfectPitchGame() {
     after,
     clearTimers,
     finishListening,
+    isOnline,
+    onlineRound,
+    resumeOnline,
     roundIndex,
     run,
     setPhase,
     setSaved,
     startCountdown,
+    startOnline,
     synth,
     volume,
     waveform,
@@ -261,34 +349,64 @@ export default function PerfectPitchGame() {
     [synth],
   );
 
-  const lockIn = useCallback(() => {
-    if (!run || phaseRef.current !== "guess") return;
+  const lockIn = useCallback(async () => {
+    if (phaseRef.current !== "guess") return;
+    const targetCents = targetCentsRef.current;
+    const startCents = startCentsRef.current;
+    if (targetCents === null || startCents === null) return;
 
     const huntMs = Math.round(performance.now() - huntStartRef.current);
     const trace = downsample(trajectoryRef.current, TRAJECTORY_SAMPLES);
+    const features = analyzeTrajectory(trace, huntMs);
+    const listenMs = Math.round(listenMsRef.current);
 
-    const guess = scoreGuess(
-      run.targetCents[roundIndex],
-      guessCentsRef.current,
-      {
-        listenMs: Math.round(listenMsRef.current),
+    synth.stop(200);
+
+    let guess: Guess | null;
+    if (isOnline) {
+      // The server holds the target and does the arithmetic; we send only what
+      // we did, and are told how it went.
+      guess = await submitOnlineGuess({
+        roundIndex: serverRoundIndexRef.current,
+        guessCents: guessCentsRef.current,
+        listenMs,
+        huntMs,
+        pointerType: coarsePointer() ? "touch" : "mouse",
+        trajectory: trace,
+        features,
+        startCents,
+        waveform,
+      });
+      if (!guess) {
+        // Rejected or unreachable. Don't invent a result — go back to idle and
+        // let the player start the round again.
+        setPhase("idle");
+        return;
+      }
+    } else {
+      if (!run) return;
+      guess = scoreGuess(targetCents, guessCentsRef.current, {
+        listenMs,
         huntMs,
         waveform,
         at: Date.now(),
-        startCents: run.startCents[roundIndex],
-        traj: analyzeTrajectory(trace, huntMs),
-      },
-    );
+        startCents,
+        traj: features,
+      });
+      const nextRun = submitGuess(run, guess);
+      setSaved({ run: nextRun, armed: false });
+    }
 
-    synth.stop(200);
-    const nextRun = submitGuess(run, guess);
-    setSaved({ run: nextRun, armed: false });
     appendGuess(guess);
 
     // Recorded here rather than on the summary screen, so closing the tab on
     // the last reveal doesn't lose the run.
-    if (isRunComplete(nextRun)) {
-      const record = summarizeRun(nextRun, waveform);
+    const all = [...activeGuesses, guess];
+    if (all.length >= ROUNDS) {
+      const record = summarizeRun(
+        { targetCents: [], startCents: [], guesses: all },
+        waveform,
+      );
       appendRun(record);
       setNewBest(submitBest(record.totalScore));
     }
@@ -296,18 +414,21 @@ export default function PerfectPitchGame() {
     setPhase("reveal");
     clearTimers();
     // Let the ribbon finish travelling to the answer before the tone returns.
-    after(900, () => synth.start(guess.targetHz, 120));
+    const targetHz = guess.targetHz;
+    after(900, () => synth.start(targetHz, 120));
     after(900 + REPLAY_MS, () => synth.stop(260));
   }, [
+    activeGuesses,
     after,
     appendGuess,
     appendRun,
     clearTimers,
-    roundIndex,
+    isOnline,
     run,
     setPhase,
     setSaved,
     submitBest,
+    submitOnlineGuess,
     synth,
     waveform,
   ]);
@@ -325,16 +446,34 @@ export default function PerfectPitchGame() {
   const goNext = useCallback(() => {
     clearTimers();
     synth.stop(160);
-    setPhase(run && isRunComplete(run) ? "summary" : "idle");
-  }, [clearTimers, run, setPhase, synth]);
+    setPhase(activeComplete ? "summary" : "idle");
+  }, [activeComplete, clearTimers, setPhase, synth]);
 
   const startNewRun = useCallback(() => {
     clearTimers();
     synth.stop(160);
     setNewBest(false);
+    // Both sources get reset: switching modes mid-session shouldn't inherit
+    // half a run from the other one.
+    resetOnline();
     setSaved({ run: createRun(), armed: false });
     setPhase("idle");
-  }, [clearTimers, setPhase, setSaved, synth]);
+  }, [clearTimers, resetOnline, setPhase, setSaved, synth]);
+
+  const changeMode = useCallback(
+    (next: Mode) => {
+      if (next === mode) return;
+      clearTimers();
+      synth.stop(160);
+      countdown.stop();
+      setNewBest(false);
+      resetOnline();
+      setSaved({ run: createRun(), armed: false });
+      setMode(next);
+      setPhase("idle");
+    },
+    [clearTimers, countdown, mode, resetOnline, setMode, setPhase, setSaved, synth],
+  );
 
   // A first-time player has no run yet; make one as soon as storage settles.
   useEffect(() => {
@@ -357,11 +496,12 @@ export default function PerfectPitchGame() {
 
   const readWaveform = useCallback(() => synth.readWaveform(), [synth]);
 
-  const lastGuess = run?.guesses[run.guesses.length - 1];
-  const runScore = run ? run.guesses.reduce((a, g) => a + g.score, 0) : 0;
+  const lastGuess = activeGuesses[activeGuesses.length - 1];
+  const runScore = activeGuesses.reduce((a, g) => a + g.score, 0);
   const showRibbon =
     phase === "idle" || phase === "guess" || phase === "reveal";
-  const displayRound = Math.min((run?.guesses.length ?? 0) + 1, ROUNDS);
+  const displayRound = Math.min(activeGuesses.length + 1, ROUNDS);
+  const ribbonStart = activeStartCents ?? 0;
 
   if (tab === 1) {
     return (
@@ -400,14 +540,42 @@ export default function PerfectPitchGame() {
         ]}
       />
 
-      {phase === "summary" && run ? (
-        <RunSummary
-          guesses={run.guesses}
-          best={best}
-          isNewBest={newBest}
-          onPlayAgain={startNewRun}
-          onViewStats={() => switchTab(1)}
-        />
+      {phase === "summary" ? (
+        <>
+          <RunSummary
+            guesses={activeGuesses}
+            best={best}
+            isNewBest={newBest}
+            onPlayAgain={startNewRun}
+            onViewStats={() => switchTab(1)}
+          />
+          {isOnline ? (
+            <OnlineSubmit
+              total={runScore}
+              name={globalBoard.name}
+              busy={onlineBusy}
+              onSubmit={async (name) => {
+                const result = await submitToBoard(name);
+                // The board component owns the entry list; nudge it rather
+                // than duplicating what it already knows how to fetch.
+                if (result) {
+                  globalBoard.setName(name);
+                  globalBoard.refresh();
+                }
+                return result;
+              }}
+            />
+          ) : (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              textAlign="center"
+            >
+              Offline runs stay in this browser and aren&apos;t eligible for the
+              global board.
+            </Typography>
+          )}
+        </>
       ) : null}
 
       {phase === "listen" ? (
@@ -441,16 +609,18 @@ export default function PerfectPitchGame() {
         </Stack>
       ) : null}
 
-      {showRibbon && run ? (
+      {showRibbon ? (
         <TuningRibbon
-          startCents={run.startCents[roundIndex]}
-          roundKey={run.guesses.length}
+          startCents={ribbonStart}
+          roundKey={activeGuesses.length}
           interactive={phase === "guess"}
           reveal={
             phase === "reveal" && lastGuess
               ? {
                   guessCents: guessCentsRef.current,
-                  targetCents: run.targetCents[run.guesses.length - 1],
+                  // Taken from the answered guess rather than the round plan,
+                  // so it works whether the target came from here or the server.
+                  targetCents: centsAtHz(lastGuess.targetHz),
                 }
               : null
           }
@@ -463,17 +633,18 @@ export default function PerfectPitchGame() {
         />
       ) : null}
 
-      {phase === "idle" && run ? (
+      {phase === "idle" ? (
         <Stack spacing={1.5} alignItems="center" sx={{ width: "100%" }}>
           <Button
             variant="contained"
             size="large"
             fullWidth
+            disabled={onlineBusy}
             startIcon={<HeadphonesIcon />}
             onClick={beginRound}
             sx={{ py: 1.5, fontWeight: 700 }}
           >
-            {run.guesses.length === 0
+            {activeGuesses.length === 0
               ? "Play the first tone"
               : `Play tone — round ${displayRound}`}
           </Button>
@@ -506,19 +677,31 @@ export default function PerfectPitchGame() {
       {phase === "reveal" && lastGuess ? (
         <RoundReveal
           guess={lastGuess}
-          round={run?.guesses.length ?? 1}
+          round={activeGuesses.length}
           totalRounds={ROUNDS}
           onPlayTarget={() => replay(lastGuess.targetHz)}
           onPlayGuess={() => replay(lastGuess.guessHz)}
           onNext={goNext}
-          nextLabel={
-            run && isRunComplete(run) ? "See your results" : "Next round"
-          }
+          nextLabel={activeComplete ? "See your results" : "Next round"}
         />
       ) : null}
 
       <Box sx={{ width: "100%" }}>
-        <Stack direction="row" justifyContent="center">
+        <Stack direction="row" justifyContent="center" alignItems="center" spacing={1}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={isOnline ? "online" : "offline"}
+            disabled={phase !== "idle" && phase !== "summary"}
+            onChange={(_, v: Mode | null) => v && changeMode(v)}
+          >
+            <ToggleButton value="online" sx={{ px: 1.5, fontSize: "0.7rem" }}>
+              Ranked
+            </ToggleButton>
+            <ToggleButton value="offline" sx={{ px: 1.5, fontSize: "0.7rem" }}>
+              Practice
+            </ToggleButton>
+          </ToggleButtonGroup>
           <IconButton
             size="small"
             onClick={() => setShowSettings((s) => !s)}
@@ -528,6 +711,29 @@ export default function PerfectPitchGame() {
             <TuneIcon fontSize="small" />
           </IconButton>
         </Stack>
+
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ display: "block", textAlign: "center", mt: 0.75 }}
+        >
+          {onlineAvailable === false
+            ? "Ranked play is unavailable — playing offline."
+            : isOnline
+              ? "Ranked: the server picks each tone and scores your guess."
+              : "Practice: nothing leaves this browser, nothing is ranked."}
+        </Typography>
+
+        {onlineError && isOnline ? (
+          <Typography
+            variant="caption"
+            color="error"
+            sx={{ display: "block", textAlign: "center" }}
+          >
+            {onlineError}
+          </Typography>
+        ) : null}
+
         <Collapse in={showSettings}>
           <Box sx={{ pt: 1 }}>
             <SoundSettings
@@ -540,13 +746,12 @@ export default function PerfectPitchGame() {
         </Collapse>
       </Box>
 
-      <GameSidebar
-        config={SIDEBAR}
-        global={globalBoard}
-        pendingScore={
-          phase === "summary" && run ? Math.round(runScore) : null
-        }
-      />
+      {/*
+        pendingScore stays null: the shared prompt posts a score the client
+        calculated, which is exactly what this game can't allow. Submission
+        goes through OnlineSubmit against the server-held run instead.
+      */}
+      <GameSidebar config={SIDEBAR} global={globalBoard} pendingScore={null} />
     </Stack>
   );
 }

@@ -60,3 +60,55 @@ export function useBestScore(
 
   return [best, submit, loaded];
 }
+
+export interface LeaderboardEntry {
+  id: string;
+  score: number;
+  date: string;
+  name?: string;
+}
+
+/** Tracks a top-N leaderboard for a game in localStorage. */
+export function useLeaderboard(
+  gameSlug: string,
+  maxEntries = 5,
+): [LeaderboardEntry[], (score: number, name?: string) => boolean, boolean, () => void] {
+  const [entries, setEntries, loaded] = useLocalStorage<LeaderboardEntry[]>(
+    `minigames:leaderboard:${gameSlug}`,
+    [],
+  );
+
+  const addScore = useCallback(
+    (score: number, name?: string) => {
+      if (score <= 0) return false;
+
+      const newEntry: LeaderboardEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        score,
+        date: new Date().toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        }),
+        ...(name ? { name } : {}),
+      };
+
+      const updated = [...entries, newEntry]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxEntries);
+
+      const madeBoard = updated.some((e) => e.id === newEntry.id);
+      if (madeBoard) {
+        setEntries(updated);
+      }
+      return madeBoard;
+    },
+    [entries, maxEntries, setEntries],
+  );
+
+  const clearLeaderboard = useCallback(() => {
+    setEntries([]);
+  }, [setEntries]);
+
+  return [entries, addScore, loaded, clearLeaderboard];
+}
+

@@ -5,82 +5,70 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
+import Leaderboard from "@/components/Leaderboard";
 import ScoreBar from "@/components/ScoreBar";
-import { useBestScore } from "@/lib/useLocalStorage";
+import { useBestScore, useLeaderboard } from "@/lib/useLocalStorage";
+import { createInitialState, flipCoin, Side, TARGET_STREAK } from "./logic";
 
-const TARGET = 10;
 const FLIP_MS = 450;
 
-type Side = "H" | "T";
-
 export default function CoinFlippersGame() {
-  const [streak, setStreak] = useState(0);
-  const [history, setHistory] = useState<Side[]>([]);
-  const [face, setFace] = useState<Side>("H");
+  const [state, setState] = useState(createInitialState);
   const [flipping, setFlipping] = useState(false);
-  const [result, setResult] = useState<"win" | "lose" | null>(null);
+
   const [best, submitBest, bestLoaded] = useBestScore("coin-flippers");
+  const [leaderboard, submitLeaderboard, leaderboardLoaded] =
+    useLeaderboard("coin-flippers");
+
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
   const flip = useCallback(() => {
     if (flipping) return;
-    // A win is terminal — require an explicit reset so the streak isn't lost
-    // to a stray keypress on the victory screen.
-    if (result === "win") return;
+    if (state.result === "win") return;
 
     setFlipping(true);
-    setResult(null);
 
     timer.current = setTimeout(() => {
-      const side: Side = Math.random() < 0.5 ? "H" : "T";
-      setFace(side);
+      setState((prev) => {
+        const { nextState, endedStreak } = flipCoin(prev);
+        if (endedStreak !== undefined && endedStreak > 0) {
+          submitBest(endedStreak);
+          submitLeaderboard(endedStreak);
+        }
+        return nextState;
+      });
       setFlipping(false);
-      setHistory((h) => [...h.slice(-(TARGET - 1)), side]);
-
-      if (side === "H") {
-        const next = streak + 1;
-        setStreak(next);
-        submitBest(next);
-        if (next >= TARGET) setResult("win");
-      } else {
-        submitBest(streak);
-        setStreak(0);
-        setResult("lose");
-      }
     }, FLIP_MS);
-  }, [flipping, result, streak, submitBest]);
+  }, [flipping, state.result, submitBest, submitLeaderboard]);
 
   const reset = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
-    setStreak(0);
-    setHistory([]);
-    setResult(null);
+    setState(createInitialState());
     setFlipping(false);
-    setFace("H");
   }, []);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== " " && e.key !== "Enter") return;
       e.preventDefault();
-      if (result === "win") reset();
+      if (state.result === "win") reset();
       else flip();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flip, reset, result]);
+  }, [flip, reset, state.result]);
 
-  const won = result === "win";
+  const won = state.result === "win";
 
   return (
     <>
       <ScoreBar
         stats={[
-          { label: "Streak", value: streak },
+          { label: "Streak", value: state.streak },
           { label: "Best", value: best, muted: !bestLoaded },
-          { label: "Target", value: TARGET },
+          { label: "Target", value: TARGET_STREAK },
         ]}
       />
 
@@ -102,7 +90,7 @@ export default function CoinFlippersGame() {
           fontWeight: 800,
           color: "#0f1120",
           background:
-            face === "H"
+            state.face === "H"
               ? "linear-gradient(145deg,#ffd76a,#e0a020)"
               : "linear-gradient(145deg,#c9ccd8,#8b8fa3)",
           boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
@@ -116,11 +104,11 @@ export default function CoinFlippersGame() {
           "&:active": { transform: flipping ? "none" : "scale(0.96)" },
         }}
       >
-        {flipping ? "" : face === "H" ? "H" : "T"}
+        {flipping ? "" : state.face === "H" ? "H" : "T"}
       </Box>
 
       <Stack direction="row" spacing={0.5} sx={{ minHeight: 22 }}>
-        {history.map((s, i) => (
+        {state.history.map((s: Side, i: number) => (
           <Box
             key={i}
             sx={{
@@ -158,15 +146,15 @@ export default function CoinFlippersGame() {
           <Stack spacing={1.5} alignItems="center">
             <Typography
               variant="body2"
-              color={result === "lose" ? "#ff5c8a" : "text.secondary"}
+              color={state.result === "lose" ? "#ff5c8a" : "text.secondary"}
               sx={{ minHeight: 20 }}
             >
               {flipping
                 ? "Flipping…"
-                : result === "lose"
+                : state.result === "lose"
                   ? "Tails. Streak reset."
-                  : streak > 0
-                    ? `${streak} heads in a row — keep going.`
+                  : state.streak > 0
+                    ? `${state.streak} heads in a row — keep going.`
                     : "Flip to begin."}
             </Typography>
             <Button variant="contained" onClick={flip} disabled={flipping}>
@@ -174,6 +162,15 @@ export default function CoinFlippersGame() {
             </Button>
           </Stack>
         )}
+      </Box>
+
+      <Box sx={{ width: "100%", mt: 2 }}>
+        <Leaderboard
+          entries={leaderboard}
+          title="Coin Flippers Leaderboard"
+          unit="heads"
+          loaded={leaderboardLoaded}
+        />
       </Box>
     </>
   );

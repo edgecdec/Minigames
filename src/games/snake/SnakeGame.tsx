@@ -71,12 +71,6 @@ export default function SnakeGame() {
     setMoving(false);
   };
 
-  const handleNextRound = useCallback(() => {
-    setState((s) => advanceLevel(s));
-    setStarted(true);
-    setMoving(false);
-  }, []);
-
   const turn = useCallback((dir: Dir) => {
     setMoving(true);
     setState((s) => queueTurn(s, dir));
@@ -126,6 +120,18 @@ export default function SnakeGame() {
     if (state.dead || state.wonRound) submitBest(state.score);
   }, [state.dead, state.score, state.wonRound, submitBest]);
 
+  // A solved maze pauses briefly so the finish feels earned, then starts the
+  // next generated level. The new snake waits for the player's first steer.
+  useEffect(() => {
+    if (!state.wonRound) return;
+    const id = window.setTimeout(() => {
+      setState((current) => (current.wonRound ? advanceLevel(current) : current));
+      setStarted(true);
+      setMoving(false);
+    }, 1500);
+    return () => window.clearTimeout(id);
+  }, [state.wonRound]);
+
   // Keyboard controls
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -133,9 +139,6 @@ export default function SnakeGame() {
       if (dir || e.key === " ") e.preventDefault(); // stop page scrolling
 
       if (stateRef.current.wonRound) {
-        if (e.key === " " || e.key === "Enter" || dir) {
-          handleNextRound();
-        }
         return;
       }
 
@@ -154,7 +157,7 @@ export default function SnakeGame() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [started, reset, turn, handleNextRound]);
+  }, [started, reset, turn]);
 
   // Resize listener & canvas transform scaling
   useEffect(() => {
@@ -255,7 +258,7 @@ export default function SnakeGame() {
         subtitle = "Press any key to try again";
       } else if (state.wonRound) {
         title = `Round ${state.level} Solved! 🎉`;
-        subtitle = "Press any key for Next Round";
+        subtitle = "Next maze starting soon…";
       } else if (started) {
         title = "Steer to begin";
         subtitle = "Arrow keys, WASD, or swipe";
@@ -279,7 +282,6 @@ export default function SnakeGame() {
     touchStart.current = null;
     if (!t0) return;
     if (state.wonRound) {
-      handleNextRound();
       return;
     }
     if (state.dead) {
@@ -347,9 +349,9 @@ export default function SnakeGame() {
       />
 
       {state.wonRound ? (
-        <Button variant="contained" color="success" onClick={handleNextRound}>
-          Next Round
-        </Button>
+        <Typography variant="caption" color="success.main">
+          Next maze starting soon…
+        </Typography>
       ) : state.dead ? (
         <Button variant="contained" onClick={() => reset(mode)}>
           Play again

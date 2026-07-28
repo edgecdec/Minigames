@@ -24,6 +24,14 @@ export interface GameMeta {
 
 export const GAMES: GameMeta[] = [
   {
+    slug: "red-guy",
+    title: "Red Guy Counter",
+    blurb: "Watch Red Guy's YouTube subscriber count climb in real time.",
+    icon: "🔴",
+    controls: "Just watch — updates automatically",
+    status: "live",
+  },
+  {
     slug: "lets-get-high",
     title: "Let's Get High",
     blurb: "Name a number. Lilian names a higher one. Keep climbing forever.",

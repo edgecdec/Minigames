@@ -26,11 +26,11 @@ export function randomHigher(current: bigint, rng: () => number = Math.random): 
 
 export function milestoneFor(value: bigint): string | undefined {
   const digits = value.toString().length;
-  if (digits >= 100) return "A HUNDRED DIGITS?! Bob has left the atmosphere!";
-  if (digits >= 50) return "Fifty digits! Bob is now legally a speck of stardust.";
+  if (digits >= 100) return "A HUNDRED DIGITS?! Lilian has left the atmosphere!";
+  if (digits >= 50) return "Fifty digits! Lilian is now legally a speck of stardust.";
   if (digits >= 25) return "Twenty-five digits! The number has its own zip code.";
-  if (value >= BigInt("1000000000")) return "A billion! Bob respectfully removes his hat.";
-  if (value >= BigInt("1000000")) return "One million! Bob has hired an accountant.";
+  if (value >= BigInt("1000000000")) return "A billion! Lilian respectfully removes her hat.";
+  if (value >= BigInt("1000000")) return "One million! Lilian has hired an accountant.";
   if (value >= BigInt("1000")) return "One thousand! Tiny comma, enormous confidence.";
   return undefined;
 }

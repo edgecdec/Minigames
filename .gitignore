@@ -9,7 +9,11 @@ data/
 backups/
 .env
 .env.local
+.ralph/.server-env
+.ralph/.test-creds
+*.local.md
 tsconfig.tsbuildinfo
+next-env.d.ts
 npm-debug.log*
 yarn-error.log*
 .DS_Store

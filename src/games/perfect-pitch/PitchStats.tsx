@@ -24,6 +24,7 @@ import {
   OCTAVE_CENTS,
   RANGE_CENTS,
   ROUNDS,
+  anchoringPull,
   binByRegister,
   centsAtHz,
   formatCents,
@@ -63,6 +64,17 @@ export default function PitchStats({
   const [confirming, setConfirming] = useState(false);
 
   const stats = useMemo(() => summarize(guesses), [guesses]);
+  const anchoring = useMemo(() => anchoringPull(guesses), [guesses]);
+
+  // Only present on rounds played since trajectory capture landed.
+  const traced = useMemo(() => guesses.filter((g) => g.traj), [guesses]);
+  const meanReversals = useMemo(
+    () =>
+      traced.length
+        ? traced.reduce((a, g) => a + (g.traj?.reversals ?? 0), 0) / traced.length
+        : 0,
+    [traced],
+  );
   const bands = useMemo(
     () =>
       binByRegister(guesses, REGISTER_BINS).map((b) => ({
@@ -140,6 +152,29 @@ export default function PitchStats({
             value: `${formatCents(stats.bias)}¢`,
             hint: `±${Math.round(stats.spread)}¢ spread`,
           },
+          ...(traced.length >= 5
+            ? [
+                {
+                  label: "Second guesses",
+                  value: meanReversals.toFixed(1),
+                  hint: "direction changes per round",
+                },
+              ]
+            : []),
+          // The starting position is random and independent of the target, so
+          // any relationship between them is a real anchoring effect.
+          ...(anchoring
+            ? [
+                {
+                  label: "Pull toward your start",
+                  value: `${(anchoring.slope * 100).toFixed(1)}%`,
+                  hint:
+                    Math.abs(anchoring.r) < 0.15
+                      ? "no real effect"
+                      : `r ${anchoring.r.toFixed(2)} over ${anchoring.n} rounds`,
+                },
+              ]
+            : []),
         ]}
       />
 

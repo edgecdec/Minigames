@@ -6,6 +6,7 @@ import {
   PAD_CENTS,
   RANGE_CENTS,
   ROUNDS,
+  anchoringPull,
   binByRegister,
   centsAtHz,
   centsBetween,
@@ -339,6 +340,65 @@ function makeGuess(targetHz: number, cents: number): Guess {
   assert(formatCents(0) === "0", "zero has no sign");
   assert(formatCents(12.4) === "+12", "sharp is signed and rounded");
   assert(formatCents(-12.4) === "−12", "flat uses a real minus sign");
+}
+
+// Test 14: anchoring — does where you were dropped drag your answer?
+{
+  const rng = createSeededRng(1234);
+
+  function withStart(targetCents: number, startCents: number, cents: number): Guess {
+    return {
+      ...makeGuess(hzAtCents(targetCents), cents),
+      startCents,
+    };
+  }
+
+  assert(anchoringPull([]) === null, "no history, no claim");
+  assert(
+    anchoringPull([withStart(1000, 2000, 30)]) === null,
+    "one round is not evidence",
+  );
+  assert(
+    anchoringPull(
+      Array.from({ length: 40 }, () => makeGuess(440, 20)),
+    ) === null,
+    "guesses recorded before start positions were stored are skipped",
+  );
+
+  // A planted 25% pull: a quarter of the starting offset leaks into the answer.
+  const pulled = Array.from({ length: 400 }, () => {
+    const target = rng() * RANGE_CENTS;
+    const start = sampleStartCents(target, rng);
+    const offset = start - target;
+    return withStart(target, start, offset * 0.25 + (rng() - 0.5) * 60);
+  });
+
+  const found = anchoringPull(pulled)!;
+  assert(found !== null, "400 rounds is plenty to measure");
+  assert(found.n === 400, "every usable round is counted");
+  assert(
+    Math.abs(found.slope - 0.25) < 0.03,
+    `recovers the planted slope, got ${found.slope.toFixed(3)}`,
+  );
+  assert(found.r > 0.8, "and reports a strong correlation");
+
+  // The honest case: error genuinely independent of where you started.
+  const independent = Array.from({ length: 400 }, () => {
+    const target = rng() * RANGE_CENTS;
+    const start = sampleStartCents(target, rng);
+    return withStart(target, start, (rng() - 0.5) * 200);
+  });
+
+  const none = anchoringPull(independent)!;
+  assert(
+    Math.abs(none.slope) < 0.05,
+    `no pull means a slope near zero, got ${none.slope.toFixed(3)}`,
+  );
+  assert(Math.abs(none.r) < 0.2, "and a correlation near zero");
+
+  // Identical inputs have no variance to regress against — must not divide by zero.
+  const flat = Array.from({ length: 40 }, () => withStart(1000, 1400, 25));
+  assert(anchoringPull(flat) === null, "zero variance returns null, not NaN");
 }
 
 console.log("All Perfect Pitch logic tests passed successfully!");

@@ -77,6 +77,78 @@ The menu picks it up automatically. Never hardcode a game in the menu.
   Reach for SQLite only when state genuinely must outlive the browser or be shared
   between players.
 
+## Database
+
+Most games need no database and should not have one. Reach for it only when
+state must outlive the browser or be shared between players — a global
+leaderboard, not a personal best.
+
+**If you want a global leaderboard, you almost certainly do not need a table.**
+There is a shared `scores` table keyed by `(game_slug, user_id)`, and a game
+opts in with one config line:
+
+```ts
+global: { unit: "pts" }
+```
+
+That gets you the board, the submit endpoint, name validation, anonymous
+signed identity, and rate limiting for free. Only add your own table when a
+single integer score genuinely can't represent your game — and say why in the
+migration.
+
+**Schema changes are migrations, and migrations are how everyone stays in sync.**
+
+```
+migrations/
+  20260727120000_perfect_pitch.sql
+  20260801093000_snake_global_scores.sql
+```
+
+- **Name them `<UTC timestamp>_<description>.sql`.** Timestamps, not `0001`,
+  `0002` — two people working in parallel would collide on sequence numbers,
+  and the merge conflict would be in a filename rather than somewhere git can
+  help you.
+- **They apply automatically at server boot**, in filename order, once each,
+  recorded in `schema_migrations`. Push a migration, the deploy restarts pm2,
+  the table exists. Nobody logs into the box.
+- **Other contributors get it by pulling.** `npm run dev` runs the same
+  `server.js`, so their local database migrates itself on the next restart.
+  There is nothing to announce and nothing to run by hand.
+- **A merged migration is frozen.** It may already have run on the server or on
+  someone else's machine, and editing it means their schema and yours silently
+  diverge. Fix mistakes by adding a new migration.
+- **Forward only.** No down-migrations. Rolling a deployed SQLite database
+  backwards is worse than fixing forward, every time.
+- **No PRAGMA statements inside a migration** — each file runs in a
+  transaction, and pragmas can't.
+- The database is snapshotted to `data/backups/` before any migration batch.
+
+**Own your namespace.** If you do add tables, prefix them with your game's slug
+— `pp_run`, `snake_maze_seed`. With many contributors this is the only thing
+standing between two games that both wanted a table called `attempts`.
+
+Server-side access goes through `getDb()` in `src/lib/db.ts`. Never import it
+from a client component; it pulls in a native module and the build will stop
+you. Shared leaderboard queries live in `db.ts`; keep anything game-specific in
+`src/games/<slug>/queries.ts` rather than growing one giant data-access module.
+
+The database file lives in `data/` — gitignored, and untouched by
+`git reset --hard`, which is why it survives deploys. Never put it under
+`.next/`, which the deploy wipes. Paths are resolved from `process.cwd()`, not
+`__dirname`: webpack rewrites `__dirname` when it bundles the Next server, so a
+`__dirname`-relative path sends `server.js` and the app to two different files.
+
+**Working on leaderboards locally?** `SESSION_SECRET` must be set or every
+submission 500s — identity signing refuses to fall back to a guessable key.
+Production uses `WEBHOOK_SECRET`; locally, any value will do:
+
+```sh
+SESSION_SECRET=local-dev npm run dev
+```
+
+If migration fails at boot, the log says so loudly and DB-backed features turn
+themselves off. The rest of the site keeps serving. Don't change that.
+
 ## Verifying your work
 
 Never claim a game works without checking. Minimum bar:

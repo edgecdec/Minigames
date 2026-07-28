@@ -3,6 +3,7 @@ const { parse } = require("url");
 const crypto = require("crypto");
 const { exec } = require("child_process");
 const next = require("next");
+const { initialize } = require("./src/lib/migrate.js");
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = "0.0.0.0";
@@ -23,7 +24,36 @@ function signatureMatches(signature, body) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
 }
 
+/**
+ * Bring the database schema up to date before serving anything.
+ *
+ * Running here rather than on first request means a contributor's new table
+ * exists the moment the deploy restarts pm2 — nobody logs into the box, and
+ * nobody has to tell the other contributors to do anything.
+ *
+ * A failure is loud in the log but NOT fatal. Most games need no database at
+ * all, and this repo's deploy is built around never being able to take the
+ * site down; a bad migration should cost you the leaderboard, not Snake.
+ */
+function migrateDatabase() {
+  try {
+    const { applied, backupPath } = initialize();
+    if (applied.length > 0) {
+      console.log(`> Applied ${applied.length} migration(s): ${applied.join(", ")}`);
+      if (backupPath) console.log(`> Pre-migration snapshot: ${backupPath}`);
+    }
+  } catch (err) {
+    globalThis.__minigamesDbError = err.message;
+    console.error("=".repeat(72));
+    console.error("DATABASE MIGRATION FAILED — database-backed features are off");
+    console.error(err);
+    console.error("=".repeat(72));
+  }
+}
+
 app.prepare().then(() => {
+  migrateDatabase();
+
   const server = createServer((req, res) => {
     const parsedUrl = parse(req.url, true);
 

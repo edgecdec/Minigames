@@ -29,6 +29,11 @@ import RunSummary from "./RunSummary";
 import SoundSettings from "./SoundSettings";
 import TuningRibbon from "./TuningRibbon";
 import {
+  type TrajectoryPoint,
+  analyzeTrajectory,
+  downsample,
+} from "./trajectory";
+import {
   type Guess,
   type RunRecord,
   type RunState,
@@ -59,6 +64,14 @@ const TONE_FADE_OUT_MS = 350;
 /** Silence between the target and your tone — this is what makes it memory. */
 const GAP_MS = 200;
 const REPLAY_MS = 1400;
+
+/**
+ * Raw movement samples kept per round. Generous — a long hunt on a 120Hz
+ * pointer produces a lot of them — then thinned before anything is stored.
+ */
+const MAX_TRAJECTORY_SAMPLES = 800;
+/** What the analysis actually runs on. Enough to keep the shape of a search. */
+const TRAJECTORY_SAMPLES = 48;
 
 type Phase = "idle" | "listen" | "gap" | "guess" | "reveal" | "summary";
 
@@ -104,6 +117,10 @@ export default function PerfectPitchGame() {
   const listenStartRef = useRef(0);
   const listenMsRef = useRef(0);
   const huntStartRef = useRef(0);
+  // How the ribbon actually moved this round. Recorded here rather than in
+  // TuningRibbon because the ribbon already reports every movement through
+  // onChange — there's nothing for it to do that isn't already happening.
+  const trajectoryRef = useRef<TrajectoryPoint[]>([]);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [newBest, setNewBest] = useState(false);
 
@@ -172,6 +189,9 @@ export default function PerfectPitchGame() {
       guessCentsRef.current = start;
       synth.start(hzAtCents(start), TONE_FADE_IN_MS);
       huntStartRef.current = performance.now();
+      // Seed with the starting position so a round where nobody touches the
+      // ribbon still has a first point to measure against.
+      trajectoryRef.current = [{ t: 0, cents: start }];
       setPhase("guess");
     });
   }, [after, clearTimers, run, roundIndex, setPhase, synth]);
@@ -231,6 +251,12 @@ export default function PerfectPitchGame() {
     (cents: number) => {
       guessCentsRef.current = cents;
       synth.setFrequency(hzAtCents(cents));
+
+      // Drop the oldest sample rather than the newest — the end of a hunt is
+      // the interesting part, and an unbounded buffer is a slow leak.
+      const trace = trajectoryRef.current;
+      if (trace.length >= MAX_TRAJECTORY_SAMPLES) trace.shift();
+      trace.push({ t: Math.round(performance.now() - huntStartRef.current), cents });
     },
     [synth],
   );
@@ -238,14 +264,19 @@ export default function PerfectPitchGame() {
   const lockIn = useCallback(() => {
     if (!run || phaseRef.current !== "guess") return;
 
+    const huntMs = Math.round(performance.now() - huntStartRef.current);
+    const trace = downsample(trajectoryRef.current, TRAJECTORY_SAMPLES);
+
     const guess = scoreGuess(
       run.targetCents[roundIndex],
       guessCentsRef.current,
       {
         listenMs: Math.round(listenMsRef.current),
-        huntMs: Math.round(performance.now() - huntStartRef.current),
+        huntMs,
         waveform,
         at: Date.now(),
+        startCents: run.startCents[roundIndex],
+        traj: analyzeTrajectory(trace, huntMs),
       },
     );
 

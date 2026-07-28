@@ -5,7 +5,10 @@
       "name": "minigames-dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "port": 3008
+      "port": 3008,
+      "env": {
+        "SESSION_SECRET": "local-dev-only-not-a-real-secret"
+      }
     }
   ]
 }

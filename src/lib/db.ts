@@ -1,10 +1,18 @@
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
-
-let _db: Database.Database | null = null;
+import type { Database } from "better-sqlite3";
+import { initialize } from "./migrate.js";
 
 /**
+ * The shared SQLite handle and the global leaderboard queries behind it.
+ *
+ * SERVER ONLY. Never import this from a client component — it pulls in node:fs
+ * and a native module, and the build will fail loudly if you try, which is the
+ * intended guard.
+ *
+ * Schema lives in /migrations and is applied at server boot, not created here,
+ * so a contributor adding a table doesn't have to edit this file (and collide
+ * with everyone else who is doing the same). See the Database section of
+ * AGENTS.md.
+ *
  * Storage is deliberately bounded. Two rules keep this DB tiny forever:
  *
  *  1. ONE ROW PER (game, player) — a new score UPSERTs over the old one, so
@@ -15,27 +23,55 @@ let _db: Database.Database | null = null;
  *
  * No score history, no per-play audit trail, no IP addresses.
  */
-export function getDb(): Database.Database {
-  if (_db) return _db;
-  const dataDir = path.join(process.cwd(), "data");
-  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-  _db = new Database(path.join(dataDir, "minigames.db"));
-  _db.pragma("journal_mode = WAL");
-  _db.exec(`
-    CREATE TABLE IF NOT EXISTS scores (
-      game_slug    TEXT    NOT NULL,
-      user_id      TEXT    NOT NULL,
-      display_name TEXT    NOT NULL,
-      score        INTEGER NOT NULL,
-      plays        INTEGER NOT NULL DEFAULT 1,
-      created_at   INTEGER NOT NULL,   -- ms epoch, first submission
-      updated_at   INTEGER NOT NULL,   -- ms epoch, best-score submission
-      PRIMARY KEY (game_slug, user_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_scores_board
-      ON scores(game_slug, score DESC, updated_at ASC);
-  `);
-  return _db;
+
+// Next re-evaluates modules on hot reload in dev. A module-level handle would
+// be re-created on every edit while the previous connection stayed open, so the
+// cache lives on globalThis, which survives a reload.
+const cache = globalThis as typeof globalThis & {
+  __minigamesDb?: Database;
+  __minigamesDbError?: string;
+};
+
+/**
+ * Records why the database is unavailable so callers can fail clearly. Set by
+ * server.js when boot-time migration fails.
+ */
+export function setDatabaseError(message: string): void {
+  cache.__minigamesDbError = message;
+}
+
+export function databaseError(): string | undefined {
+  return cache.__minigamesDbError;
+}
+
+/**
+ * The database handle, opening it on first use.
+ *
+ * Throws when the database is unavailable. Route handlers should catch and
+ * return a 503 — a broken database must never take down the games that don't
+ * use one.
+ */
+export function getDb(): Database {
+  if (cache.__minigamesDbError) {
+    throw new Error(`Database unavailable: ${cache.__minigamesDbError}`);
+  }
+  if (!cache.__minigamesDb) {
+    // Idempotent: migrations that already ran at boot are skipped.
+    const { db } = initialize();
+    cache.__minigamesDb = db;
+  }
+  return cache.__minigamesDb;
+}
+
+/** True when database-backed features should be offered at all. */
+export function databaseAvailable(): boolean {
+  if (cache.__minigamesDbError) return false;
+  try {
+    getDb();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Rows retained per game. Beyond this, the lowest scores are pruned. */

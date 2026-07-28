@@ -2,7 +2,9 @@
  * Perfect Pitch — pure rules.
  *
  * No DOM, no React, no Web Audio. Everything here is a plain function over
- * plain data so the scoring and stats can be tested without a browser.
+ * plain data so the scoring and stats can be tested without a browser. The
+ * server runs these same functions to score a submitted guess, which is what
+ * keeps client and server from ever disagreeing about a result.
  *
  * The whole game lives in *cents*, not hertz. Pitch perception is logarithmic:
  * being 50 Hz off at 130 Hz is a catastrophe, at 4000 Hz it's inaudible. One
@@ -46,6 +48,8 @@ export const SCORE_DECAY_CENTS = 200;
 
 /** How close to a whole octave counts as "an octave error" rather than noise. */
 export const OCTAVE_TOLERANCE_CENTS = 50;
+
+import type { TrajectoryFeatures } from "./trajectory";
 
 export type Waveform = "sine" | "triangle" | "sawtooth";
 
@@ -187,6 +191,13 @@ export interface Guess {
   huntMs: number;
   waveform: Waveform;
   at: number;
+  /**
+   * Where the ribbon was dropped. Optional because guesses recorded before
+   * this field existed are still in players' browsers.
+   */
+  startCents?: number;
+  /** How they got there. Absent on history predating trajectory capture. */
+  traj?: TrajectoryFeatures;
 }
 
 export interface RunState {
@@ -253,7 +264,14 @@ export function currentRound(run: RunState): number {
 export function scoreGuess(
   targetCents: number,
   guessCents: number,
-  meta: { listenMs: number; huntMs: number; waveform: Waveform; at: number },
+  meta: {
+    listenMs: number;
+    huntMs: number;
+    waveform: Waveform;
+    at: number;
+    startCents?: number;
+    traj?: TrajectoryFeatures;
+  },
 ): Guess {
   const cents = guessCents - targetCents;
   return {
@@ -338,6 +356,63 @@ export function summarize(guesses: Guess[]): Summary {
     withinSemitone: guesses.length
       ? abs.filter((c) => c <= 100).length / guesses.length
       : 0,
+  };
+}
+
+export interface Anchoring {
+  n: number;
+  /**
+   * Cents of error per cent of starting offset. Positive means the ribbon's
+   * random starting position drags the answer toward itself.
+   */
+  slope: number;
+  /** Pearson correlation, so a slope built on noise can be ignored. */
+  r: number;
+}
+
+/** Below this the slope is fitting noise, not a person. */
+const ANCHORING_MIN_SAMPLES = 20;
+
+/**
+ * Does where you started pull your answer?
+ *
+ * The starting position is uniformly random and independent of the target, so
+ * any relationship between "how far away I was dropped" and "how far off I
+ * ended up" is a genuine anchoring effect rather than an artefact. A positive
+ * slope means being dropped high makes you guess high.
+ *
+ * Returns null until there's enough history to say anything honest.
+ */
+export function anchoringPull(guesses: Guess[]): Anchoring | null {
+  const pairs = guesses
+    .filter((g) => typeof g.startCents === "number")
+    .map((g) => ({
+      x: (g.startCents as number) - centsAtHz(g.targetHz),
+      y: g.cents,
+    }));
+
+  if (pairs.length < ANCHORING_MIN_SAMPLES) return null;
+
+  const meanX = mean(pairs.map((p) => p.x));
+  const meanY = mean(pairs.map((p) => p.y));
+
+  let covariance = 0;
+  let varianceX = 0;
+  let varianceY = 0;
+  for (const p of pairs) {
+    const dx = p.x - meanX;
+    const dy = p.y - meanY;
+    covariance += dx * dy;
+    varianceX += dx * dx;
+    varianceY += dy * dy;
+  }
+
+  if (varianceX === 0 || varianceY === 0) return null;
+
+  return {
+    n: pairs.length,
+    slope: covariance / varianceX,
+    r: covariance / Math.sqrt(varianceX * varianceY),
   };
 }
 

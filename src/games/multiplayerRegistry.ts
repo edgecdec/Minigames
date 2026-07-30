@@ -29,14 +29,14 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
   {
     slug: "codenames",
     title: "Codenames But It's Actually Fun",
-    blurb: "Everyone guesses the word bridging the prompt. Converge to win.",
+    blurb: "One word per player on screen. Narrow them down to a single word.",
     icon: "🧠",
     minPlayers: 2,
     howToPlay:
-      "You all see the same words and secretly submit the one word connecting them. " +
-      "Everyone matching wins. Otherwise every different answer becomes the next prompt, " +
-      "so the count shrinks as you start agreeing: 4 words, then 3, then 2, then a win. " +
-      "No word can be used twice.",
+      "The prompt starts with one word per player. Everyone secretly submits the single " +
+      "word that connects them all. Every different answer becomes the next prompt, so " +
+      "agreement shrinks the board: 4 words, then 3, then 2, then everyone says the same " +
+      "word and you win. No word can be used twice.",
     status: "live",
   },
   {

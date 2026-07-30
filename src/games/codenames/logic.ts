@@ -6,10 +6,16 @@
  * submissions and the round is won. Miss, and the submitted words BECOME the new
  * prompt — so a failure feeds the next attempt. Win in the fewest tries.
  *
- * N words for N players. With 4 players a miss leaves 4 words, and the group
- * converges as players start agreeing: 4 distinct answers -> 3 -> 2 -> 1 = win.
- * The word count on screen is therefore a live progress bar for how close the
- * group is, which is the whole appeal.
+ * N WORDS FOR N PLAYERS, converging on 1. Five players start from five words and
+ * each submit the single word bridging them; every distinct answer becomes the
+ * next prompt, and everyone saying the same word wins.
+ *
+ * The word count is NOT a monotonic progress bar. It is bounded above by the
+ * player count and can climb again whenever a round produces more distinct
+ * answers than the prompt currently holds — a real five-player game might run
+ * 5 -> 3 -> 5 -> 4 -> 2 -> 5 -> 1. That thrash is the game: a wide prompt makes
+ * the next answer harder to guess, so recovering from it is the interesting part.
+ * Don't present the count as "progress".
  *
  * Petisomon's added rule is implemented too: previously used words are barred,
  * which stops the degenerate strategy of everyone repeating one word.
@@ -19,36 +25,49 @@ export const MIN_PLAYERS = 2;
 export const MAX_WORD_LENGTH = 24;
 
 /**
- * Opening prompts, always two words regardless of player count — a round starts
- * from a pair and then widens or narrows with the group. Deliberately concrete;
- * abstract nouns make bad prompts.
+ * Pool of opening words. A round draws one per player, so the starting prompt is
+ * as wide as the group and narrows from there.
+ *
+ * Deliberately concrete and unrelated to each other: abstract nouns make bad
+ * prompts, and words that already suggest a common link make the first round
+ * trivial.
  */
-export const STARTING_PAIRS: [string, string][] = [
-  ["WARM", "WATER"],
-  ["NIGHT", "MARKET"],
-  ["PAPER", "MOON"],
-  ["SALT", "WOUND"],
-  ["IRON", "HORSE"],
-  ["GLASS", "CEILING"],
-  ["SILVER", "TONGUE"],
-  ["FIRE", "DRILL"],
-  ["GHOST", "TOWN"],
-  ["SUGAR", "RUSH"],
-  ["STONE", "COLD"],
-  ["THUNDER", "STORM"],
-  ["GREEN", "LIGHT"],
-  ["BROKEN", "RECORD"],
-  ["OPEN", "BOOK"],
-  ["HEAVY", "METAL"],
+export const STARTING_WORDS: string[] = [
+  "WARM", "WATER", "NIGHT", "MARKET", "PAPER", "MOON", "SALT", "WOUND",
+  "IRON", "HORSE", "GLASS", "CEILING", "SILVER", "TONGUE", "FIRE", "DRILL",
+  "GHOST", "TOWN", "SUGAR", "RUSH", "STONE", "COLD", "THUNDER", "STORM",
+  "GREEN", "LIGHT", "BROKEN", "RECORD", "OPEN", "BOOK", "HEAVY", "METAL",
+  "SHARP", "CORNER", "QUIET", "ENGINE", "BITTER", "ORANGE", "HOLLOW", "CROWN",
 ];
+
+/** Fewest words a prompt can start with, even in a two-player room. */
+export const MIN_PROMPT_WORDS = 2;
+
+/**
+ * Draw `count` distinct words for the opening prompt.
+ *
+ * Uses a partial Fisher-Yates over a copy so no word repeats within one prompt —
+ * a duplicate would be banned on sight and make the round unwinnable.
+ */
+export function drawStartingWords(count: number, rng: () => number = Math.random): string[] {
+  const pool = [...STARTING_WORDS];
+  const n = Math.max(MIN_PROMPT_WORDS, Math.min(count, pool.length));
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const idx = Math.floor(rng() * pool.length);
+    out.push(pool.splice(idx, 1)[0]);
+  }
+  return out;
+}
 
 export type Phase = "lobby" | "submitting" | "reveal" | "won";
 
 export interface CodenamesState {
   phase: Phase;
   /**
-   * The words currently on screen. Two at the start, then one per distinct
-   * answer from the previous round — so this shrinks as the group converges.
+   * The words currently on screen. One per player at the start, then one per
+   * distinct answer from the previous round — so this shrinks as the group
+   * converges, and reaching a single word IS the win.
    */
   words: string[];
   /** userId -> normalised submission for this round. Cleared each round. */
@@ -60,6 +79,21 @@ export interface CodenamesState {
   winningWord: string | null;
   /** Populated at reveal so clients can show who said what. */
   lastReveal: { userId: string; word: string }[] | null;
+  /**
+   * Cumulative sync points per player: each round you score one point for every
+   * OTHER player who said your word. Purely for bragging rights — it does not
+   * affect who wins, which is still the whole group converging.
+   */
+  syncPoints: Record<string, number>;
+  /** Points earned in the round just revealed, for a per-round readout. */
+  lastRoundSync: Record<string, number> | null;
+  /**
+   * How many words were on screen before the current reveal, so the UI can say
+   * whether the group narrowed or widened. Comparing against the number of
+   * players who answered would be wrong: going 3 -> 4 with five players is a
+   * step BACKWARD, but 4 is still fewer than 5.
+   */
+  prevWordCount: number;
 }
 
 /**
@@ -88,16 +122,28 @@ export function normalizeWord(raw: string): string {
   return w;
 }
 
-export function createState(rng: () => number = Math.random): CodenamesState {
-  const pair = STARTING_PAIRS[Math.floor(rng() * STARTING_PAIRS.length)];
+/**
+ * `playerCount` sets the width of the opening prompt — one word per player.
+ * Defaults to 2 so a lobby that hasn't filled yet still has something on screen.
+ */
+export function createState(
+  rng: () => number = Math.random,
+  playerCount = MIN_PROMPT_WORDS,
+): CodenamesState {
+  const words = drawStartingWords(playerCount, rng);
   return {
     phase: "lobby",
-    words: [pair[0], pair[1]],
+    words,
+    // The prompt words are banned immediately: submitting a word already on
+    // screen isn't a connection, it's a no-op.
+    used: words.map(normalizeWord),
     submissions: {},
-    used: [normalizeWord(pair[0]), normalizeWord(pair[1])],
     round: 1,
     winningWord: null,
     lastReveal: null,
+    syncPoints: {},
+    lastRoundSync: null,
+    prevWordCount: words.length,
   };
 }
 
@@ -145,6 +191,41 @@ export function everyoneSubmitted(
 }
 
 /**
+ * Sync points for one round: each player scores the number of OTHER players who
+ * submitted the same word.
+ *
+ * So if three people say HAWAII and two disagree, each of the three scores 2 and
+ * the lone answers score 0. A unanimous round therefore pays everyone
+ * (players - 1), which is the maximum available.
+ */
+export function roundSyncPoints(
+  submissions: Record<string, string>,
+  playerIds: string[],
+): Record<string, number> {
+  const counts = new Map<string, number>();
+  const present = playerIds.filter((id) => id in submissions);
+  present.forEach((id) => {
+    const w = submissions[id];
+    counts.set(w, (counts.get(w) ?? 0) + 1);
+  });
+  const out: Record<string, number> = {};
+  present.forEach((id) => {
+    // Minus one so you don't score for your own submission.
+    out[id] = (counts.get(submissions[id]) ?? 1) - 1;
+  });
+  return out;
+}
+
+function addSync(
+  total: Record<string, number>,
+  round: Record<string, number>,
+): Record<string, number> {
+  const next = { ...total };
+  for (const id in round) next[id] = (next[id] ?? 0) + round[id];
+  return next;
+}
+
+/**
  * Resolve a round. Unanimous agreement wins; otherwise EVERY distinct submitted
  * word becomes the next prompt.
  *
@@ -171,14 +252,22 @@ export function resolveRound(
     userId: e.userId,
     word: displayFor(e.userId, e.word),
   }));
+  const roundSync = roundSyncPoints(state.submissions, playerIds);
+  const syncPoints = addSync(state.syncPoints, roundSync);
 
   if (distinct.length === 1) {
     return {
       ...state,
       phase: "won",
+      // Collapse the prompt to the agreed word: the goal is literally to get the
+      // board down to one word, so leaving the old prompt up hides the payoff.
+      words: [distinct[0].toUpperCase()],
+      prevWordCount: state.words.length,
       winningWord: distinct[0].toUpperCase(),
       lastReveal: reveal,
       used: [...state.used, distinct[0]],
+      syncPoints,
+      lastRoundSync: roundSync,
     };
   }
 
@@ -186,11 +275,37 @@ export function resolveRound(
     ...state,
     phase: "reveal",
     words: distinct.map((w) => w.toUpperCase()),
+    prevWordCount: state.words.length,
     submissions: {},
     used: [...state.used, ...distinct],
     round: state.round + 1,
     winningWord: null,
     lastReveal: reveal,
+    syncPoints,
+    lastRoundSync: roundSync,
+  };
+}
+
+/**
+ * Most and least in-sync players, for the end-of-game readout. Ties are returned
+ * together rather than broken arbitrarily.
+ */
+export function syncExtremes(syncPoints: Record<string, number>): {
+  most: string[];
+  least: string[];
+  high: number;
+  low: number;
+} | null {
+  const ids = Object.keys(syncPoints);
+  if (ids.length === 0) return null;
+  const values = ids.map((id) => syncPoints[id]);
+  const high = Math.max(...values);
+  const low = Math.min(...values);
+  return {
+    most: ids.filter((id) => syncPoints[id] === high),
+    least: ids.filter((id) => syncPoints[id] === low),
+    high,
+    low,
   };
 }
 
@@ -206,6 +321,9 @@ export function startGame(state: CodenamesState): CodenamesState {
 }
 
 /** Fresh game, keeping nothing — used by the host's "play again". */
-export function resetGame(rng: () => number = Math.random): CodenamesState {
-  return { ...createState(rng), phase: "submitting" };
+export function resetGame(
+  rng: () => number = Math.random,
+  playerCount = MIN_PROMPT_WORDS,
+): CodenamesState {
+  return { ...createState(rng, playerCount), phase: "submitting" };
 }

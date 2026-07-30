@@ -7,24 +7,30 @@
  * in sync: logic.ts is the source of truth and has the tests.
  */
 
-const STARTING_PAIRS = [
-  ["WARM", "WATER"],
-  ["NIGHT", "MARKET"],
-  ["PAPER", "MOON"],
-  ["SALT", "WOUND"],
-  ["IRON", "HORSE"],
-  ["GLASS", "CEILING"],
-  ["SILVER", "TONGUE"],
-  ["FIRE", "DRILL"],
-  ["GHOST", "TOWN"],
-  ["SUGAR", "RUSH"],
-  ["STONE", "COLD"],
-  ["THUNDER", "STORM"],
-  ["GREEN", "LIGHT"],
-  ["BROKEN", "RECORD"],
-  ["OPEN", "BOOK"],
-  ["HEAVY", "METAL"],
+/**
+ * Pool of opening words. A round draws one per player, so the starting prompt is
+ * as wide as the group and narrows from there. Mirrors logic.ts.
+ */
+const STARTING_WORDS = [
+  "WARM", "WATER", "NIGHT", "MARKET", "PAPER", "MOON", "SALT", "WOUND",
+  "IRON", "HORSE", "GLASS", "CEILING", "SILVER", "TONGUE", "FIRE", "DRILL",
+  "GHOST", "TOWN", "SUGAR", "RUSH", "STONE", "COLD", "THUNDER", "STORM",
+  "GREEN", "LIGHT", "BROKEN", "RECORD", "OPEN", "BOOK", "HEAVY", "METAL",
+  "SHARP", "CORNER", "QUIET", "ENGINE", "BITTER", "ORANGE", "HOLLOW", "CROWN",
 ];
+
+const MIN_PROMPT_WORDS = 2;
+
+/** Distinct draw — a repeated prompt word would be banned on sight. */
+function drawStartingWords(count) {
+  const pool = STARTING_WORDS.slice();
+  const n = Math.max(MIN_PROMPT_WORDS, Math.min(count, pool.length));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  }
+  return out;
+}
 
 const MAX_WORD_LENGTH = 24;
 
@@ -47,19 +53,45 @@ function normalizeWord(raw) {
   return w;
 }
 
-function freshState() {
-  const pair = STARTING_PAIRS[Math.floor(Math.random() * STARTING_PAIRS.length)];
+/**
+ * `playerCount` sets the width of the opening prompt — one word per player, then
+ * one word per distinct answer, so the count shrinks as the group converges and
+ * reaching a single word is the win.
+ */
+function freshState(playerCount) {
+  const words = drawStartingWords(playerCount || MIN_PROMPT_WORDS);
   return {
     phase: "lobby",
-    // N words for N players: a round starts from a pair, then carries one word
-    // per distinct answer, so the count shrinks as the group converges.
-    words: [pair[0], pair[1]],
+    words,
     submissions: {},
-    used: [normalizeWord(pair[0]), normalizeWord(pair[1])],
+    // Prompt words are banned immediately: repeating one isn't a connection.
+    used: words.map(normalizeWord),
     round: 1,
     winningWord: null,
     lastReveal: null,
+    // Cumulative "sync points": each round you score one point per OTHER player
+    // who said your word. Bragging rights only — winning is still the group
+    // converging on a single word. Mirrors logic.ts.
+    syncPoints: {},
+    lastRoundSync: null,
+    prevWordCount: words.length,
   };
+}
+
+/** Each player scores the number of OTHER players who submitted the same word. */
+function roundSyncPoints(submissions, playerIds) {
+  const counts = new Map();
+  const present = playerIds.filter((id) => id in submissions);
+  present.forEach((id) => {
+    const w = submissions[id];
+    counts.set(w, (counts.get(w) || 0) + 1);
+  });
+  const out = {};
+  // Minus one so you don't score for your own submission.
+  present.forEach((id) => {
+    out[id] = (counts.get(submissions[id]) || 1) - 1;
+  });
+  return out;
 }
 
 function connectedIds(room) {
@@ -77,14 +109,23 @@ function resolve(room, state) {
 
   const distinct = Array.from(new Set(entries.map((e) => e.word)));
   const reveal = entries.map((e) => ({ userId: e.userId, word: e.word.toUpperCase() }));
+  const roundSync = roundSyncPoints(state.submissions, ids);
+  const syncPoints = Object.assign({}, state.syncPoints);
+  for (const id in roundSync) syncPoints[id] = (syncPoints[id] || 0) + roundSync[id];
 
   if (distinct.length === 1) {
     return {
       ...state,
       phase: "won",
+      // Collapse the prompt to the agreed word — getting the board down to one
+      // word IS the goal, so leaving the old prompt up hides the payoff.
+      words: [distinct[0].toUpperCase()],
+      prevWordCount: state.words.length,
       winningWord: distinct[0].toUpperCase(),
       lastReveal: reveal,
       used: state.used.concat(distinct),
+      syncPoints,
+      lastRoundSync: roundSync,
     };
   }
 
@@ -95,11 +136,14 @@ function resolve(room, state) {
     ...state,
     phase: "reveal",
     words: distinct.map((w) => w.toUpperCase()),
+    prevWordCount: state.words.length,
     submissions: {},
     used: state.used.concat(distinct),
     round: state.round + 1,
     winningWord: null,
     lastReveal: reveal,
+    syncPoints,
+    lastRoundSync: roundSync,
   };
 }
 
@@ -107,8 +151,8 @@ module.exports = {
   slug: "codenames",
   minPlayers: 2,
 
-  createState() {
-    return freshState();
+  createState(room) {
+    return freshState(connectedIds(room).length);
   },
 
   /**
@@ -123,6 +167,11 @@ module.exports = {
       winningWord: state.winningWord,
       lastReveal: state.lastReveal,
       usedCount: state.used.length,
+      syncPoints: state.syncPoints,
+      lastRoundSync: state.lastRoundSync,
+      prevWordCount: state.prevWordCount,
+      /** Ceiling on the prompt: it can never exceed the number of players. */
+      playerCount: connectedIds(room).length,
       // Who has locked in, not what they said.
       submitted: Object.keys(state.submissions),
       waitingOn: connectedIds(room).filter((id) => !(id in state.submissions)).length,
@@ -137,11 +186,14 @@ module.exports = {
       case "start": {
         if (!ctx.isHost) return false;
         if (state.phase !== "lobby") return false;
-        if (connectedIds(room).length < module.exports.minPlayers) {
+        const playerCount = connectedIds(room).length;
+        if (playerCount < module.exports.minPlayers) {
           ctx.emitToPlayer("room_error", { message: "Need at least 2 players" });
           return false;
         }
-        ctx.setState({ ...state, phase: "submitting" });
+        // Redraw at the real headcount. createState ran when the host was alone,
+        // so reusing it would open a 4-player game on a 2-word prompt.
+        ctx.setState({ ...freshState(playerCount), phase: "submitting" });
         return true;
       }
 
@@ -185,7 +237,12 @@ module.exports = {
 
       case "again": {
         if (!ctx.isHost) return false;
-        ctx.setState({ ...freshState(), phase: "submitting" });
+        // Carry the tally across games: it's a session-long "who thinks alike".
+        ctx.setState({
+          ...freshState(connectedIds(room).length),
+          phase: "submitting",
+          syncPoints: state.syncPoints,
+        });
         return true;
       }
 

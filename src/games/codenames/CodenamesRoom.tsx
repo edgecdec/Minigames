@@ -22,6 +22,13 @@ export interface CodenamesPublicState {
   usedCount: number;
   submitted: string[];
   waitingOn: number;
+  /** Session-long tally: a point per other player who said your word. */
+  syncPoints: Record<string, number>;
+  /** Points from the round just revealed. */
+  lastRoundSync: Record<string, number> | null;
+  /** Words on screen before this reveal, so we can say narrowed vs widened. */
+  prevWordCount: number;
+  playerCount: number;
 }
 
 /**
@@ -73,6 +80,109 @@ function PromptWords({ words }: { words: string[] }) {
   );
 }
 
+/**
+ * Sync-point standings. Explicitly not the win condition — the group converging
+ * is — so this is framed as a "who thinks alike" curiosity.
+ */
+function SyncBoard({
+  syncPoints,
+  lastRoundSync,
+  players,
+  userId,
+}: {
+  syncPoints: Record<string, number>;
+  lastRoundSync: Record<string, number> | null;
+  players: RoomPlayer[];
+  userId: string;
+}) {
+  const ids = Object.keys(syncPoints);
+  if (ids.length === 0) return null;
+
+  const ranked = [...ids].sort((a, b) => syncPoints[b] - syncPoints[a]);
+  const high = syncPoints[ranked[0]];
+  const low = syncPoints[ranked[ranked.length - 1]];
+  // With everyone level there is no "most" or "least" worth calling out.
+  const spread = high !== low;
+
+  return (
+    <Paper
+      elevation={0}
+      sx={{ width: "100%", p: 2, borderRadius: 2, bgcolor: "background.paper" }}
+    >
+      <Typography
+        variant="subtitle2"
+        sx={{
+          fontWeight: 700,
+          color: "text.secondary",
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          fontSize: "0.75rem",
+          mb: 1.5,
+          textAlign: "center",
+        }}
+      >
+        🧩 In sync
+      </Typography>
+
+      <Stack spacing={0.75}>
+        {ranked.map((id) => {
+          const gained = lastRoundSync?.[id] ?? 0;
+          const isTop = spread && syncPoints[id] === high;
+          const isBottom = spread && syncPoints[id] === low;
+          return (
+            <Box
+              key={id}
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                px: 1.5,
+                py: 0.6,
+                borderRadius: 1,
+                bgcolor: id === userId ? "rgba(124,92,255,0.14)" : "action.hover",
+              }}
+            >
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontWeight: id === userId ? 700 : 500,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {players.find((p) => p.id === id)?.name ?? "Player"}
+                  {id === userId ? " (you)" : ""}
+                </Typography>
+                {isTop ? <Typography variant="caption">🧠 most</Typography> : null}
+                {isBottom ? <Typography variant="caption">🎨 least</Typography> : null}
+              </Stack>
+              <Stack direction="row" spacing={1} alignItems="baseline">
+                {gained > 0 ? (
+                  <Typography variant="caption" sx={{ color: "success.main", fontWeight: 700 }}>
+                    +{gained}
+                  </Typography>
+                ) : null}
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                  {syncPoints[id]}
+                </Typography>
+              </Stack>
+            </Box>
+          );
+        })}
+      </Stack>
+
+      <Typography
+        variant="caption"
+        sx={{ display: "block", textAlign: "center", mt: 1.25, color: "text.secondary" }}
+      >
+        A point per other player who said your word. Doesn&apos;t affect winning.
+      </Typography>
+    </Paper>
+  );
+}
+
 export default function CodenamesRoom({
   state,
   players,
@@ -112,7 +222,7 @@ export default function CodenamesRoom({
       <Stack direction="row" spacing={2} sx={{ color: "text.secondary" }}>
         <Typography variant="caption">Round {state.round}</Typography>
         <Typography variant="caption">
-          {state.words.length} {state.words.length === 1 ? "word" : "words"} left
+          {state.words.length}/{Math.max(state.playerCount, state.words.length)} words
         </Typography>
         <Typography variant="caption">{state.usedCount} used</Typography>
       </Stack>
@@ -122,8 +232,9 @@ export default function CodenamesRoom({
       {state.phase === "lobby" ? (
         <Stack spacing={1.5} alignItems="center">
           <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-            Everyone submits the one word that connects these. Match to win —
-            every different answer becomes part of the next prompt.
+            One word on screen per player. Everyone secretly submits the single
+            word connecting them all. Agree and the prompt shrinks — disagree and
+            it can grow right back. Everyone saying the same word wins.
           </Typography>
           {isHost ? (
             <Button variant="contained" size="large" onClick={() => send("start")}>
@@ -183,9 +294,11 @@ export default function CodenamesRoom({
       {state.phase === "reveal" && state.lastReveal ? (
         <Stack spacing={1.5} sx={{ width: "100%", maxWidth: 340 }} alignItems="center">
           <Alert severity="info" sx={{ width: "100%" }}>
-            {state.words.length < state.lastReveal.length
-              ? `Closer — down to ${state.words.length} words.`
-              : `No match — all ${state.words.length} words carry over.`}
+            {state.words.length < state.prevWordCount
+              ? `Closer — down to ${state.words.length} from ${state.prevWordCount}.`
+              : state.words.length > state.prevWordCount
+                ? `Scattered — back up to ${state.words.length} from ${state.prevWordCount}.`
+                : `Still ${state.words.length} words. Nobody converged.`}
           </Alert>
           <Stack spacing={0.5} sx={{ width: "100%" }}>
             {state.lastReveal.map((r) => (
@@ -230,6 +343,15 @@ export default function CodenamesRoom({
             </Typography>
           )}
         </Stack>
+      ) : null}
+
+      {state.phase === "reveal" || state.phase === "won" ? (
+        <SyncBoard
+          syncPoints={state.syncPoints}
+          lastRoundSync={state.lastRoundSync}
+          players={players}
+          userId={userId}
+        />
       ) : null}
 
       <PlayerList

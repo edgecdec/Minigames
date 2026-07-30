@@ -1,4 +1,8 @@
 import {
+  roundSyncPoints,
+  syncExtremes,
+  MIN_PROMPT_WORDS,
+  drawStartingWords,
   createState,
   normalizeWord,
   submitWord,
@@ -42,7 +46,7 @@ t("empty on symbols only", normalizeWord("!!!") === "");
 // --- setup ---
 let s = createState(seeded);
 t("starts in lobby", s.phase === "lobby");
-t("starts with two words", s.words.length === 2 && s.words[0] !== s.words[1]);
+t("defaults to two words", s.words.length === 2 && s.words[0] !== s.words[1]);
 t("prompt words pre-banned", s.used.length === 2);
 t("round starts at 1", s.round === 1);
 
@@ -167,6 +171,156 @@ t("all three prior answers barred",
 t("a word on screen is barred too",
   submitWord(noRep, "a", noRep.words[0]).error !== undefined);
 t("a fresh word is still allowed", submitWord(noRep, "a", "topaz").error === undefined);
+
+// --- the opening prompt is one word per player ---
+t("2 players -> 2 words", createState(Math.random, 2).words.length === 2);
+t("3 players -> 3 words", createState(Math.random, 3).words.length === 3);
+t("4 players -> 4 words", createState(Math.random, 4).words.length === 4);
+t("6 players -> 6 words", createState(Math.random, 6).words.length === 6);
+t("1 player floors at 2", createState(Math.random, 1).words.length === MIN_PROMPT_WORDS);
+t("0 players floors at 2", createState(Math.random, 0).words.length === MIN_PROMPT_WORDS);
+
+t("opening words are distinct", (() => {
+  for (let i = 0; i < 60; i++) {
+    const w = createState(Math.random, 6).words;
+    if (new Set(w).size !== w.length) return false;
+  }
+  return true;
+})(), "a duplicate prompt word would be banned on sight and unwinnable");
+
+t("every opening word is pre-banned", (() => {
+  const st = createState(Math.random, 5);
+  return st.words.every((w) => st.used.includes(normalizeWord(w)));
+})());
+
+t("an opening word cannot be submitted", (() => {
+  const st = startGame(createState(Math.random, 4));
+  return st.words.every((w) => submitWord(st, "u1", w).error !== undefined);
+})());
+
+t("draw never exceeds the pool", drawStartingWords(500, Math.random).length <= 40);
+t("draw is distinct at pool scale", (() => {
+  const w = drawStartingWords(40, Math.random);
+  return new Set(w).size === w.length;
+})());
+
+// The full arc for four players: 4 words -> converge -> 1 word wins.
+let arc = startGame(createState(Math.random, 4));
+t("arc starts on 4 words", arc.words.length === 4, String(arc.words.length));
+arc = submitWord(arc, "a", "signal").state;
+arc = submitWord(arc, "b", "signal").state;
+arc = submitWord(arc, "c", "beacon").state;
+arc = submitWord(arc, "d", "lantern").state;
+arc = resolveRound(arc, ["a", "b", "c", "d"]);
+t("4 words narrow to 3", arc.words.length === 3, arc.words.join("/"));
+arc = continueRound(arc);
+arc = submitWord(arc, "a", "torch").state;
+arc = submitWord(arc, "b", "torch").state;
+arc = submitWord(arc, "c", "torch").state;
+arc = submitWord(arc, "d", "flare").state;
+arc = resolveRound(arc, ["a", "b", "c", "d"]);
+t("3 words narrow to 2", arc.words.length === 2, arc.words.join("/"));
+arc = continueRound(arc);
+arc = submitWord(arc, "a", "ember").state;
+arc = submitWord(arc, "b", "ember").state;
+arc = submitWord(arc, "c", "ember").state;
+arc = submitWord(arc, "d", "ember").state;
+arc = resolveRound(arc, ["a", "b", "c", "d"]);
+t("converging on 1 word wins", arc.phase === "won" && arc.winningWord === "EMBER",
+  `${arc.phase}/${arc.winningWord}`);
+
+// --- sync points ---
+// The worked example: 3 say hawaii, 1 says france, 1 says china.
+const hawaii = roundSyncPoints(
+  { a: "hawaii", b: "hawaii", c: "hawaii", d: "france", e: "china" },
+  ["a", "b", "c", "d", "e"],
+);
+t("3 matching players each score 2",
+  hawaii.a === 2 && hawaii.b === 2 && hawaii.c === 2, JSON.stringify(hawaii));
+t("lone answers score 0", hawaii.d === 0 && hawaii.e === 0, JSON.stringify(hawaii));
+t("you don't score for your own word", !Object.values(hawaii).includes(3));
+
+// Unanimous pays the maximum: players - 1 each.
+const unan = roundSyncPoints({ a: "x", b: "x", c: "x", d: "x" }, ["a", "b", "c", "d"]);
+t("unanimous with 4 pays 3 each",
+  Object.values(unan).every((v) => v === 3), JSON.stringify(unan));
+
+// All different pays nothing.
+const none = roundSyncPoints({ a: "p", b: "q", c: "r" }, ["a", "b", "c"]);
+t("all-different pays 0", Object.values(none).every((v) => v === 0));
+
+// Two pairs each score 1.
+const pairs = roundSyncPoints({ a: "m", b: "m", c: "n", d: "n" }, ["a", "b", "c", "d"]);
+t("two pairs score 1 each", Object.values(pairs).every((v) => v === 1), JSON.stringify(pairs));
+
+// Non-submitters are absent rather than zeroed, so they can't be "least in sync".
+const partial = roundSyncPoints({ a: "z", b: "z" }, ["a", "b", "c"]);
+t("a player who didn't answer is omitted", !("c" in partial), JSON.stringify(partial));
+
+// Normalised words count as the same answer.
+let syncState = startGame(createState(Math.random, 3));
+syncState = submitWord(syncState, "a", "steam").state;
+syncState = submitWord(syncState, "b", "STEAMING").state;
+syncState = submitWord(syncState, "c", "frost").state;
+const syncRes = resolveRound(syncState, ["a", "b", "c"]);
+t("different spellings still count as sync",
+  syncRes.lastRoundSync?.a === 1 && syncRes.lastRoundSync?.b === 1,
+  JSON.stringify(syncRes.lastRoundSync));
+t("the odd one out scores 0", syncRes.lastRoundSync?.c === 0);
+
+// Points accumulate across rounds.
+let acc = continueRound(syncRes);
+acc = submitWord(acc, "a", "amber").state;
+acc = submitWord(acc, "b", "amber").state;
+acc = submitWord(acc, "c", "amber").state;
+acc = resolveRound(acc, ["a", "b", "c"]);
+t("points accumulate", acc.syncPoints.a === 3, JSON.stringify(acc.syncPoints));
+t("laggard catches up when they agree", acc.syncPoints.c === 2, JSON.stringify(acc.syncPoints));
+
+// Extremes, with ties returned together.
+const ext = syncExtremes({ a: 5, b: 5, c: 1 });
+t("most in sync handles ties", ext?.most.length === 2 && ext.high === 5, JSON.stringify(ext));
+t("least in sync identified", ext?.least.join() === "c" && ext.low === 1);
+t("no players -> null", syncExtremes({}) === null);
+t("everyone level: most and least are all", (() => {
+  const e = syncExtremes({ a: 2, b: 2 });
+  return e?.most.length === 2 && e?.least.length === 2;
+})());
+
+// --- the count is bounded, not monotonic ---
+// A real five-player game can thrash: 5 -> 3 -> 5 -> 4 -> 2 -> 1. Asserting the
+// count only ever falls would be wrong, and framing it as "progress" misleads.
+{
+  const ids5 = ["a", "b", "c", "d", "e"];
+  let g5 = startGame(createState(Math.random, 5));
+  const trail: number[] = [g5.words.length];
+  const playRound = (words: string[]) => {
+    ids5.forEach((id, i) => {
+      g5 = submitWord(g5, id, words[i]).state;
+    });
+    g5 = resolveRound(g5, ids5);
+    trail.push(g5.words.length);
+    if (g5.phase === "reveal") g5 = continueRound(g5);
+  };
+
+  playRound(["alpha", "alpha", "alpha", "bravo", "charlie"]); // 3 distinct
+  t("5 players narrow to 3", trail[1] === 3, trail.join("->"));
+  playRound(["delta", "echo", "foxtrot", "golf", "hotel"]); // all 5 differ
+  t("count climbs back to 5", trail[2] === 5, trail.join("->"));
+  t("widening is detectable", g5.prevWordCount === 3, String(g5.prevWordCount));
+  playRound(["india", "india", "juliet", "kilo", "lima"]); // 4 distinct
+  t("then down to 4", trail[3] === 4, trail.join("->"));
+  playRound(["mike", "mike", "mike", "mike", "november"]); // 2 distinct
+  t("then down to 2", trail[4] === 2, trail.join("->"));
+  playRound(["oscar", "oscar", "oscar", "oscar", "oscar"]); // unanimous
+  t("unanimous finally wins", g5.phase === "won" && g5.winningWord === "OSCAR",
+    `${g5.phase}/${g5.winningWord}`);
+  t("the count went UP at least once",
+    trail.some((n, i) => i > 0 && n > trail[i - 1]), trail.join("->"));
+  t("count never exceeds the player count", trail.every((n) => n <= 5), trail.join("->"));
+  t("a win collapses the prompt to one word", g5.words.length === 1, g5.words.join("/"));
+  t("the winning word is the one on screen", g5.words[0] === g5.winningWord);
+}
 
 console.log("---", "pass:", pass, "fail:", fail);
 if (fail) process.exit(1);

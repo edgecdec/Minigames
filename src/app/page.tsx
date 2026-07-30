@@ -3,6 +3,7 @@ import Container from "@mui/material/Container";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import GameCard from "@/components/GameCard";
+import MultiplayerCard from "@/components/MultiplayerCard";
 import { GAMES } from "@/games/registry";
 
 export default function Home() {
@@ -17,6 +18,24 @@ export default function Home() {
             A collection of small browser games. No accounts, no ads.
           </Typography>
         </Stack>
+
+        <Stack spacing={2} sx={{ mb: 4 }}>
+          <MultiplayerCard />
+        </Stack>
+
+        <Typography
+          variant="subtitle2"
+          sx={{
+            color: "text.secondary",
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            fontSize: "0.75rem",
+            fontWeight: 700,
+            mb: 1.5,
+          }}
+        >
+          Solo
+        </Typography>
 
         <Stack spacing={2}>
           {GAMES.map((game) => (

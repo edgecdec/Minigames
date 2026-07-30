@@ -71,6 +71,77 @@ function checkLeaderboardConfig() {
   console.warn("=".repeat(72));
 }
 
+/**
+ * Multiplayer lives on the SAME HTTP server and port as the site — one process,
+ * one host, exactly like TopTenGame. Rooms are held in memory by
+ * src/lib/rooms.js, so running more than one instance (pm2 cluster mode, or a
+ * second box behind a load balancer) would silently split players who typed the
+ * same room code into separate room universes. Keep pm2 in fork mode.
+ */
+function attachMultiplayer(httpServer) {
+  try {
+    const { Server } = require("socket.io");
+    const rooms = require("./src/lib/rooms.js");
+    const codenames = require("./src/games/codenames/server.js");
+
+    rooms.registerGame(codenames.slug, codenames);
+
+    const io = new Server(httpServer, {
+      // Same origin as the site, so no CORS allowance is needed.
+      serveClient: false,
+      // Rooms are in-memory; a long-lived socket is the point. Fail fast enough
+      // that a dead tab frees its seat, slow enough to survive a phone waking.
+      pingTimeout: 20_000,
+    });
+
+    io.on("connection", (socket) => {
+      socket.on("error", (err) => console.error("[socket]", err && err.message));
+    });
+
+    rooms.attach(io, { verifyIdentity: verifySocketIdentity });
+    console.log(`> Multiplayer ready (${rooms.listGames().join(", ")})`);
+  } catch (err) {
+    // The single-player games are the bulk of the site and must still serve.
+    console.error("=".repeat(72));
+    console.error("MULTIPLAYER FAILED TO START - single-player games are unaffected");
+    console.error(err);
+    console.error("=".repeat(72));
+  }
+}
+
+/**
+ * Resolve a socket's player id from the same signed cookie the leaderboard
+ * uses, so a player is the same person in a room as on the boards.
+ *
+ * Returns null when there's no valid cookie; the room layer then issues a
+ * throwaway id. That keeps a first-time visitor able to play without us minting
+ * a durable identity over a websocket, where we can't set a cookie anyway.
+ */
+function verifySocketIdentity(cookieHeader) {
+  try {
+    const { parseCookie } = require("./src/lib/rooms.js");
+    const token = parseCookie(cookieHeader, "minigames_id");
+    if (!token) return null;
+
+    const secret = process.env.SESSION_SECRET || process.env.WEBHOOK_SECRET;
+    if (!secret) return null;
+
+    const dot = token.lastIndexOf(".");
+    if (dot < 1) return null;
+    const userId = token.slice(0, dot);
+    const mac = token.slice(dot + 1);
+    const expected = crypto
+      .createHmac("sha256", secret)
+      .update(userId)
+      .digest("hex")
+      .slice(0, 32);
+    if (mac.length !== expected.length) return null;
+    return crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(expected)) ? userId : null;
+  } catch {
+    return null;
+  }
+}
+
 app.prepare().then(() => {
   migrateDatabase();
   checkLeaderboardConfig();
@@ -140,6 +211,8 @@ app.prepare().then(() => {
 
     handle(req, res, parsedUrl);
   });
+
+  attachMultiplayer(server);
 
   server.listen(port, () => {
     console.log(`> Minigames running on http://localhost:${port}`);

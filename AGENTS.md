@@ -71,8 +71,7 @@ The menu picks it up automatically. Never hardcode a game in the menu.
 - **Support touch.** Everything must be playable on a phone: swipe or tap, no hover-only
   interactions, and canvases need `touchAction: "none"`.
 - **No new dependencies without asking.** The stack is Next.js 15, React 19, MUI v7,
-  better-sqlite3. Notably there is **no socket.io** — multiplayer needs a real decision
-  first, not a quiet `npm install`.
+  better-sqlite3, socket.io.
 - **Everything client-side by default.** These games need no server, no accounts, no DB.
   Reach for SQLite only when state genuinely must outlive the browser or be shared
   between players.
@@ -192,3 +191,42 @@ that: build locally first.
 Server details, ports, and secrets are in `.ralph/*.local.md`, which is **gitignored**.
 This repo is **public** — never commit hostnames, IPs, secrets, or an inventory of the
 other apps on the box.
+
+## Multiplayer
+
+Rooms live at `/multiplayer`. A room is created EMPTY and the host picks a game
+from `src/games/multiplayerRegistry.ts` — that is why a game is a plugin rather
+than a property of the room code.
+
+**The room layer owns membership; a game owns only its rules.** `src/lib/rooms.js`
+handles codes, joining, host transfer, reconnects, and broadcast. A game never
+touches a socket.
+
+Adding one:
+
+1. `src/games/<slug>/logic.ts` — pure rules, tested without a browser
+2. `src/games/<slug>/server.js` — room handlers (`createState`, `publicState`,
+   `onEvent`, optional `onPlayerLeave`). CommonJS: `server.js` loads it outside
+   the webpack build.
+3. `src/games/<slug>/<Name>Room.tsx` — the in-lobby view
+4. an entry in `multiplayerRegistry.ts`, plus `registerGame()` in `server.js`
+
+### Rules with teeth
+
+- **ONE PROCESS ONLY.** Rooms are an in-memory `Map`. Under pm2 cluster mode, or
+  a second host behind a load balancer, two players typing the same code land in
+  different processes and each see a room of one — with no error anywhere. Keep
+  pm2 in fork mode. Scaling out means moving live state out of process first.
+- **Never trust a client-sent user id.** Identity comes from the signed cookie on
+  the socket handshake. A client-supplied id would let anyone claim the host seat.
+- **Mint a fallback id once per socket, not per join.** A visitor with no cookie
+  needs a stable anon id; generating one per `join_room` seats the same browser
+  as several players and the room waits forever on people who don't exist. This
+  was a real bug — the browser test caught it after the protocol test didn't.
+- **`publicState` is a privacy boundary.** Send who has acted, not what they did.
+  Codenames leaks the game entirely if submissions go out before the reveal.
+- **Handle the player who leaves mid-round.** `onPlayerLeave` must not leave
+  everyone else waiting on a submission that will never arrive.
+- **Rules are duplicated between `logic.ts` and `server.js`** because one is
+  bundled and one is not. `logic.ts` is the source of truth and has the tests;
+  when you change one, change both.

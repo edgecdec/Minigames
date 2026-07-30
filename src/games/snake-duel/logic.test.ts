@@ -1,6 +1,10 @@
 import type { Dir } from "./logic";
 import {
   COLS,
+  MAX_PLAYERS,
+  SPAWN_PROTECT_TICKS,
+  pickSpawns,
+  isProtected,
   ROWS,
   DIRS,
   MAX_TICKS,
@@ -21,10 +25,29 @@ const t = (name: string, cond: boolean, extra = "") => {
 
 const zero = () => 0;
 
-/** Skip the countdown so a test can act on the playing phase directly. */
+/**
+ * Skip the countdown AND spawn protection, so a test can exercise collisions.
+ *
+ * Snakes are then placed on known, well-separated rows. Spawns are random now,
+ * and a constant rng of 0 puts every snake on the SAME cell — so tests that care
+ * about collisions must position them explicitly rather than trust the spawn.
+ *
+ * Setting tick directly rather than stepping keeps the board where the test put
+ * it; stepping would move every snake while the clock ran down.
+ */
 function playing(ids = ["a", "b"]): DuelState {
   let s = createDuel(ids, zero);
   while (s.phase === "countdown") s = step(s, zero);
+  s = { ...s, tick: SPAWN_PROTECT_TICKS };
+  // Row 2, 6, 10, ... each heading right, far apart and clear of the walls.
+  s.snakes.forEach((_, i) => {
+    const y = 2 + i * 4;
+    s = place(s, i, [
+      { x: 4, y },
+      { x: 3, y },
+      { x: 2, y },
+    ], DIRS.right);
+  });
   return s;
 }
 
@@ -43,7 +66,9 @@ function place(
 let s = createDuel(["a", "b"], zero);
 t("two snakes spawned", s.snakes.length === 2);
 t("starts in countdown", s.phase === "countdown");
-t("distinct spawn corners", s.snakes[0].body[0].x !== s.snakes[1].body[0].x);
+// Spawns are random, so with a constant rng they legitimately coincide. Real
+// separation is asserted in the free-for-all section with a real rng.
+t("two snakes have bodies", s.snakes.every((sn) => sn.body.length === 3));
 t("each snake is 3 long", s.snakes.every((sn) => sn.body.length === 3));
 t("food placed", s.food.length === 3);
 t("food never on a snake", s.food.every((f) => !occupied(s).some((c) => c.x === f.x && c.y === f.y)));
@@ -63,7 +88,7 @@ const beforeHead = { ...s.snakes[0].body[0] };
 s = step(s, zero);
 t("snake advanced", s.snakes[0].body[0].x !== beforeHead.x || s.snakes[0].body[0].y !== beforeHead.y);
 t("length preserved without food", s.snakes[0].body.length === 3);
-t("tick counted", s.tick === 1);
+t("tick counted", s.tick === SPAWN_PROTECT_TICKS + 1);
 
 // --- reversal rejected ---
 s = playing();
@@ -95,6 +120,13 @@ t("win tallied", s.wins["b"] === 1);
 
 // --- tail tip is NOT a collision (it vacates the same tick) ---
 s = playing();
+// Park the other snake far away: the helper seats it on row 6, which is exactly
+// where this test's tail tip sits, and it would register as a head-on instead.
+s = place(s, 1, [
+  { x: 20, y: 20 },
+  { x: 19, y: 20 },
+  { x: 18, y: 20 },
+], DIRS.right);
 s = place(
   s,
   0,
@@ -192,6 +224,7 @@ t("queue capped at 2", (() => {
 
 // --- stalemate cap ---
 s = playing();
+// Keep them apart so the stalemate is judged on score, not on a crash.
 s = { ...s, tick: MAX_TICKS, snakes: s.snakes.map((sn, i) => ({ ...sn, score: i === 0 ? 9 : 2 })) };
 s = step(s, zero);
 t("stalemate ends the duel", s.phase === "over");
@@ -203,6 +236,90 @@ const spots = placeFood(taken, 5, Math.random);
 t("placeFood avoids taken cells", spots.every((f) => !taken.some((c) => c.x === f.x && c.y === f.y)));
 t("placeFood returns distinct cells", new Set(spots.map((f) => `${f.x},${f.y}`)).size === spots.length);
 t("placeFood respects the board", spots.every((f) => f.x >= 0 && f.x < COLS && f.y >= 0 && f.y < ROWS));
+
+// --- free-for-all: N players ---
+const many = ["a", "b", "c", "d", "e"];
+let ffa = createDuel(many, Math.random);
+t("5 players all spawn", ffa.snakes.length === 5);
+t("player cap enforced",
+  createDuel(Array.from({ length: 20 }, (_, i) => `p${i}`), Math.random).snakes.length === MAX_PLAYERS);
+
+// Random spawns, not fixed corners: two boards should differ.
+const seedsDiffer = (() => {
+  for (let i = 0; i < 40; i++) {
+    const one = createDuel(["a", "b"], Math.random).snakes[0].body[0];
+    const two = createDuel(["a", "b"], Math.random).snakes[0].body[0];
+    if (one.x !== two.x || one.y !== two.y) return true;
+  }
+  return false;
+})();
+t("spawns are random, not fixed", seedsDiffer);
+
+const spawns = pickSpawns(6, Math.random);
+t("spawns stay off the walls",
+  spawns.every((sp) => sp.at.x >= 2 && sp.at.x < COLS - 2 && sp.at.y >= 2 && sp.at.y < ROWS - 2),
+  JSON.stringify(spawns.map((sp) => sp.at)));
+t("spawn bodies fit on the board", (() => {
+  const g = createDuel(many, Math.random);
+  return g.snakes.every((sn) =>
+    sn.body.every((c) => c.x >= 0 && c.x < COLS && c.y >= 0 && c.y < ROWS));
+})());
+t("no two snakes share a cell at spawn", (() => {
+  for (let i = 0; i < 25; i++) {
+    const g = createDuel(many, Math.random);
+    const cells = g.snakes.flatMap((sn) => sn.body).map((c) => `${c.x},${c.y}`);
+    if (new Set(cells).size !== cells.length) return false;
+  }
+  return true;
+})());
+
+// --- spawn protection ---
+let prot = createDuel(["a", "b"], zero);
+while (prot.phase === "countdown") prot = step(prot, zero);
+t("protection active at the start", isProtected(prot));
+// Drive two snakes head-on while shielded: both must survive.
+prot = place(prot, 0, [{ x: 5, y: 10 }, { x: 4, y: 10 }, { x: 3, y: 10 }], DIRS.right);
+prot = place(prot, 1, [{ x: 7, y: 10 }, { x: 8, y: 10 }, { x: 9, y: 10 }], DIRS.left);
+prot = { ...prot, tick: 0 };
+prot = step(prot, zero);
+t("head-on is survivable while protected", prot.snakes.every((sn) => sn.alive),
+  JSON.stringify(prot.snakes.map((sn) => sn.causeOfDeath)));
+t("round continues during protection", prot.phase === "playing");
+
+// A wall still kills while protected — the window is not consequence-free.
+let wallProt = createDuel(["a", "b"], zero);
+while (wallProt.phase === "countdown") wallProt = step(wallProt, zero);
+wallProt = place(wallProt, 0, [
+  { x: COLS - 1, y: 5 },
+  { x: COLS - 2, y: 5 },
+  { x: COLS - 3, y: 5 },
+]);
+wallProt = { ...wallProt, tick: 0 };
+wallProt = step(wallProt, zero);
+t("walls still kill while protected", !wallProt.snakes[0].alive);
+t("cause is wall", wallProt.snakes[0].causeOfDeath === "wall");
+
+// Once it expires, snake-vs-snake is lethal again.
+let expired = createDuel(["a", "b"], zero);
+while (expired.phase === "countdown") expired = step(expired, zero);
+expired = place(expired, 0, [{ x: 5, y: 10 }, { x: 4, y: 10 }, { x: 3, y: 10 }], DIRS.right);
+expired = place(expired, 1, [{ x: 7, y: 10 }, { x: 8, y: 10 }, { x: 9, y: 10 }], DIRS.left);
+expired = { ...expired, tick: SPAWN_PROTECT_TICKS };
+expired = step(expired, zero);
+t("head-on kills once protection lapses", expired.snakes.every((sn) => !sn.alive));
+t("that is a draw", expired.winner === null && expired.phase === "over");
+
+// --- elimination, not instant end, with 3+ players ---
+let three3 = playing(["a", "b", "c"]);
+three3 = place(three3, 0, [
+  { x: COLS - 1, y: 5 },
+  { x: COLS - 2, y: 5 },
+  { x: COLS - 3, y: 5 },
+]);
+three3 = step(three3, zero);
+t("one death eliminates but does not end a 3-player round",
+  !three3.snakes[0].alive && three3.phase === "playing", three3.phase);
+t("two survivors remain", three3.snakes.filter((sn) => sn.alive).length === 2);
 
 console.log("---", "pass:", pass, "fail:", fail);
 if (fail) process.exit(1);

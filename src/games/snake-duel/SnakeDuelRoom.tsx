@@ -26,12 +26,33 @@ export interface DuelPublicState {
   wins: Record<string, number>;
   cols: number;
   rows: number;
+  /** Ticks of spawn protection left; 0 once collisions are live. */
+  protectedTicks: number;
+  tickMs: number;
 }
 
 const BOARD_PX = 384;
-/** You are always purple; your opponent is always cyan. */
+/**
+ * You are always purple, wherever you sit in the player list — a free-for-all is
+ * unreadable if your own colour moves between rounds. Everyone else takes the
+ * next palette in order.
+ */
 const YOU = { head: "#a692ff", body: "#7c5cff" };
-const THEM = { head: "#7fe4ff", body: "#39d8ff" };
+const OTHERS = [
+  { head: "#7fe4ff", body: "#39d8ff" },
+  { head: "#7ce8a4", body: "#3ddc97" },
+  { head: "#ffd76a", body: "#ffb547" },
+  { head: "#ff9ab5", body: "#ff5c8a" },
+  { head: "#d7a8ff", body: "#b06cff" },
+  { head: "#a8f0e4", body: "#4fd6c0" },
+  { head: "#ffc99a", body: "#ff9147" },
+];
+
+function paletteFor(userId: string, myId: string, others: string[]) {
+  if (userId === myId) return YOU;
+  const idx = others.indexOf(userId);
+  return OTHERS[(idx < 0 ? 0 : idx) % OTHERS.length];
+}
 
 export default function SnakeDuelRoom({
   state,
@@ -122,14 +143,26 @@ export default function SnakeDuelRoom({
       ctx.fill();
     });
 
+    const otherIds = state.snakes.map((s) => s.userId).filter((id) => id !== userId);
+    const shielded = state.protectedTicks > 0;
+
     state.snakes.forEach((s) => {
-      const mine = s.userId === userId;
-      const palette = mine ? YOU : THEM;
+      const palette = paletteFor(s.userId, userId, otherIds);
       s.body.forEach((c, i) => {
         ctx.fillStyle = i === 0 ? palette.head : palette.body;
-        ctx.globalAlpha = s.alive ? 1 : 0.3;
+        ctx.globalAlpha = s.alive ? 1 : 0.25;
         ctx.fillRect(c.x * cell + 1, c.y * cell + 1, cell - 2, cell - 2);
       });
+      // Ring the head while protected, so it's obvious why nobody is dying.
+      if (shielded && s.alive) {
+        const h = s.body[0];
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(h.x * cell + cell / 2, h.y * cell + cell / 2, cell * 0.72, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       ctx.globalAlpha = 1;
     });
 
@@ -144,43 +177,57 @@ export default function SnakeDuelRoom({
   }, [state, userId, cell]);
 
   const me = state.snakes.find((s) => s.userId === userId);
-  const them = state.snakes.find((s) => s.userId !== userId);
+  const aliveCount = state.snakes.filter((s) => s.alive).length;
 
   return (
     <Stack spacing={2} sx={{ width: "100%", alignItems: "center" }}>
-      {/* Scores, colour-coded to match the board */}
-      <Stack direction="row" spacing={2} justifyContent="center" sx={{ width: "100%" }}>
-        {[
-          { s: me, palette: YOU, label: "You" },
-          { s: them, palette: THEM, label: them ? nameFor(them.userId) : "Waiting…" },
-        ].map((entry, i) => (
-          <Box
-            key={i}
-            sx={{
-              flex: 1,
-              px: 2,
-              py: 1,
-              borderRadius: 2,
-              bgcolor: "background.paper",
-              border: "1px solid",
-              borderColor: entry.s?.alive === false ? "rgba(255,255,255,0.08)" : entry.palette.body,
-              textAlign: "center",
-              opacity: entry.s?.alive === false ? 0.5 : 1,
-            }}
-          >
-            <Typography variant="caption" sx={{ color: "text.secondary", display: "block" }}>
-              {entry.label}
-            </Typography>
-            <Typography sx={{ fontWeight: 800, color: entry.palette.head }}>
-              {entry.s?.score ?? 0}
-            </Typography>
-            {entry.s ? (
-              <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.6rem" }}>
-                {state.wins[entry.s.userId] ?? 0} won
+      {/* Scores for every player, colour-coded to match the board */}
+      <Stack
+        direction="row"
+        spacing={1}
+        useFlexGap
+        sx={{ width: "100%", flexWrap: "wrap", justifyContent: "center" }}
+      >
+        {state.snakes.map((s) => {
+          const otherIds = state.snakes.map((x) => x.userId).filter((id) => id !== userId);
+          const palette = paletteFor(s.userId, userId, otherIds);
+          const mine = s.userId === userId;
+          return (
+            <Box
+              key={s.userId}
+              sx={{
+                px: 1.5,
+                py: 0.75,
+                minWidth: 84,
+                borderRadius: 2,
+                bgcolor: "background.paper",
+                border: mine ? "2px solid" : "1px solid",
+                borderColor: s.alive ? palette.body : "rgba(255,255,255,0.08)",
+                textAlign: "center",
+                opacity: s.alive ? 1 : 0.45,
+              }}
+            >
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                  display: "block",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {mine ? "You" : nameFor(s.userId)}
               </Typography>
-            ) : null}
-          </Box>
-        ))}
+              <Typography sx={{ fontWeight: 800, color: palette.head, lineHeight: 1.2 }}>
+                {s.score}
+              </Typography>
+              <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.6rem" }}>
+                {state.wins[s.userId] ?? 0} won
+              </Typography>
+            </Box>
+          );
+        })}
       </Stack>
 
       <canvas
@@ -201,14 +248,22 @@ export default function SnakeDuelRoom({
 
       {state.phase === "waiting" ? (
         <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-          Waiting for a second player — share the room code above.
+          Waiting for another player — share the room code above.
         </Typography>
       ) : null}
 
       {state.phase === "playing" ? (
-        <Typography variant="caption" color="text.secondary">
-          Arrow keys, WASD, or swipe
-        </Typography>
+        <Stack spacing={0.5} alignItems="center">
+          {state.protectedTicks > 0 ? (
+            <Typography variant="body2" sx={{ fontWeight: 700, color: "success.main" }}>
+              🛡 Spawn protection — {Math.ceil((state.protectedTicks * state.tickMs) / 1000)}s
+            </Typography>
+          ) : null}
+          <Typography variant="caption" color="text.secondary">
+            Arrow keys, WASD, or swipe
+            {aliveCount > 2 ? ` · ${aliveCount} still alive` : ""}
+          </Typography>
+        </Stack>
       ) : null}
 
       {state.phase === "over" ? (

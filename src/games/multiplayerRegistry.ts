@@ -29,25 +29,27 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
   {
     slug: "codenames",
     title: "Codenames But It's Actually Fun",
-    blurb: "Two words. Everyone guesses the word that bridges them. Match to win.",
+    blurb: "Everyone guesses the word bridging the prompt. Converge to win.",
     icon: "🧠",
     minPlayers: 2,
     howToPlay:
-      "You all see the same two words and secretly submit the one word connecting them. " +
-      "Match and you win. Miss, and your two words become the new pair — so a bad guess " +
-      "still moves you forward. Words already used can't be used again.",
+      "You all see the same words and secretly submit the one word connecting them. " +
+      "Everyone matching wins. Otherwise every different answer becomes the next prompt, " +
+      "so the count shrinks as you start agreeing: 4 words, then 3, then 2, then a win. " +
+      "No word can be used twice.",
     status: "live",
   },
   {
     slug: "snake-duel",
-    title: "Snake 1v1",
-    blurb: "Grid-locked duel. Grow, cut them off, don't crash first.",
+    title: "Snake Free-for-All",
+    blurb: "Up to 8 snakes, random spawns, last one alive wins.",
     icon: "🐍",
     minPlayers: 2,
     howToPlay:
-      "Both snakes move on the same server tick. Eat food to grow, and try to make " +
-      "the other player crash into a wall, themselves, or you. A head-on collision is " +
-      "a draw. Last one alive takes the round.",
+      "Everyone spawns somewhere random with a few seconds of spawn protection, then " +
+      "it's last-snake-standing. All snakes move on the same server tick. Eat to grow, " +
+      "and make the others crash into a wall, themselves, or you. Walls still kill " +
+      "during protection.",
     status: "live",
   },
 ];

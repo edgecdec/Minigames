@@ -15,7 +15,7 @@ import type { RoomPlayer } from "@/lib/useRoom";
 /** Mirrors publicState() in ./server.js — submissions stay hidden until reveal. */
 export interface CodenamesPublicState {
   phase: "lobby" | "submitting" | "reveal" | "won";
-  pair: [string, string];
+  words: string[];
   round: number;
   winningWord: string | null;
   lastReveal: { userId: string; word: string }[] | null;
@@ -24,23 +24,28 @@ export interface CodenamesPublicState {
   waitingOn: number;
 }
 
-function WordPair({ pair }: { pair: [string, string] }) {
+/**
+ * The prompt words. Wraps and shrinks with the count, since a 6-player round can
+ * legitimately have six words on screen before the group starts converging.
+ */
+function PromptWords({ words }: { words: string[] }) {
+  const many = words.length > 3;
   return (
     <Stack
       direction="row"
-      spacing={1.5}
+      spacing={1}
       alignItems="center"
       justifyContent="center"
       sx={{ width: "100%", flexWrap: "wrap" }}
       useFlexGap
     >
-      {pair.map((w, i) => (
-        <Box key={`${w}-${i}`} sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+      {words.map((w, i) => (
+        <Box key={`${w}-${i}`} sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <Paper
             elevation={0}
             sx={{
-              px: 2.5,
-              py: 1.5,
+              px: many ? 1.5 : 2.5,
+              py: many ? 1 : 1.5,
               borderRadius: 2,
               bgcolor: "background.paper",
               border: "1px solid",
@@ -50,14 +55,16 @@ function WordPair({ pair }: { pair: [string, string] }) {
             <Typography
               sx={{
                 fontWeight: 900,
-                fontSize: { xs: "1.35rem", sm: "1.75rem" },
+                fontSize: many
+                  ? { xs: "1rem", sm: "1.2rem" }
+                  : { xs: "1.35rem", sm: "1.75rem" },
                 letterSpacing: "0.04em",
               }}
             >
               {w}
             </Typography>
           </Paper>
-          {i === 0 ? (
+          {i < words.length - 1 ? (
             <Typography sx={{ color: "text.secondary", fontWeight: 700 }}>+</Typography>
           ) : null}
         </Box>
@@ -104,15 +111,19 @@ export default function CodenamesRoom({
     <Stack spacing={2.5} sx={{ width: "100%", alignItems: "center" }}>
       <Stack direction="row" spacing={2} sx={{ color: "text.secondary" }}>
         <Typography variant="caption">Round {state.round}</Typography>
-        <Typography variant="caption">{state.usedCount} words used</Typography>
+        <Typography variant="caption">
+          {state.words.length} {state.words.length === 1 ? "word" : "words"} left
+        </Typography>
+        <Typography variant="caption">{state.usedCount} used</Typography>
       </Stack>
 
-      <WordPair pair={state.pair} />
+      <PromptWords words={state.words} />
 
       {state.phase === "lobby" ? (
         <Stack spacing={1.5} alignItems="center">
           <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-            Everyone submits the one word that connects these two.
+            Everyone submits the one word that connects these. Match to win —
+            every different answer becomes part of the next prompt.
           </Typography>
           {isHost ? (
             <Button variant="contained" size="large" onClick={() => send("start")}>
@@ -172,7 +183,9 @@ export default function CodenamesRoom({
       {state.phase === "reveal" && state.lastReveal ? (
         <Stack spacing={1.5} sx={{ width: "100%", maxWidth: 340 }} alignItems="center">
           <Alert severity="info" sx={{ width: "100%" }}>
-            No match — those two words are the new pair.
+            {state.words.length < state.lastReveal.length
+              ? `Closer — down to ${state.words.length} words.`
+              : `No match — all ${state.words.length} words carry over.`}
           </Alert>
           <Stack spacing={0.5} sx={{ width: "100%" }}>
             {state.lastReveal.map((r) => (

@@ -51,7 +51,9 @@ function freshState() {
   const pair = STARTING_PAIRS[Math.floor(Math.random() * STARTING_PAIRS.length)];
   return {
     phase: "lobby",
-    pair: [pair[0], pair[1]],
+    // N words for N players: a round starts from a pair, then carries one word
+    // per distinct answer, so the count shrinks as the group converges.
+    words: [pair[0], pair[1]],
     submissions: {},
     used: [normalizeWord(pair[0]), normalizeWord(pair[1])],
     round: 1,
@@ -86,11 +88,13 @@ function resolve(room, state) {
     };
   }
 
-  const [first, second] = distinct.slice(0, 2);
+  // EVERY distinct word carries forward. Truncating to two would discard the
+  // other players' answers, so the group would converge on a prompt most of
+  // them never saw. Duplicates collapsing is the mechanism of progress.
   return {
     ...state,
     phase: "reveal",
-    pair: [first.toUpperCase(), second.toUpperCase()],
+    words: distinct.map((w) => w.toUpperCase()),
     submissions: {},
     used: state.used.concat(distinct),
     round: state.round + 1,
@@ -114,7 +118,7 @@ module.exports = {
   publicState(room, state) {
     return {
       phase: state.phase,
-      pair: state.pair,
+      words: state.words,
       round: state.round,
       winningWord: state.winningWord,
       lastReveal: state.lastReveal,

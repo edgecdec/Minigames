@@ -1,19 +1,28 @@
 /**
  * "Codenames But It's Actually Fun" — pure rules, no DOM, no sockets.
  *
- * From the Discord thread (Alukian): everyone sees two words and privately
- * submits the single word they think bridges them. Match on all submissions and
- * the round is won. Miss, and the submitted words BECOME the new pair — so a
- * failure feeds the next attempt. Win in the fewest tries.
+ * From the Discord thread (Alukian): everyone sees the words on screen and
+ * privately submits the single word they think bridges them. Match on ALL
+ * submissions and the round is won. Miss, and the submitted words BECOME the new
+ * prompt — so a failure feeds the next attempt. Win in the fewest tries.
+ *
+ * N words for N players. With 4 players a miss leaves 4 words, and the group
+ * converges as players start agreeing: 4 distinct answers -> 3 -> 2 -> 1 = win.
+ * The word count on screen is therefore a live progress bar for how close the
+ * group is, which is the whole appeal.
  *
  * Petisomon's added rule is implemented too: previously used words are barred,
- * which stops the degenerate strategy of both players repeating one word.
+ * which stops the degenerate strategy of everyone repeating one word.
  */
 
 export const MIN_PLAYERS = 2;
 export const MAX_WORD_LENGTH = 24;
 
-/** Opening pairs. Deliberately concrete — abstract nouns make bad prompts. */
+/**
+ * Opening prompts, always two words regardless of player count — a round starts
+ * from a pair and then widens or narrows with the group. Deliberately concrete;
+ * abstract nouns make bad prompts.
+ */
 export const STARTING_PAIRS: [string, string][] = [
   ["WARM", "WATER"],
   ["NIGHT", "MARKET"],
@@ -37,8 +46,11 @@ export type Phase = "lobby" | "submitting" | "reveal" | "won";
 
 export interface CodenamesState {
   phase: Phase;
-  /** The two words currently on screen. */
-  pair: [string, string];
+  /**
+   * The words currently on screen. Two at the start, then one per distinct
+   * answer from the previous round — so this shrinks as the group converges.
+   */
+  words: string[];
   /** userId -> normalised submission for this round. Cleared each round. */
   submissions: Record<string, string>;
   /** Every word already used, so it can't be replayed. Normalised. */
@@ -80,7 +92,7 @@ export function createState(rng: () => number = Math.random): CodenamesState {
   const pair = STARTING_PAIRS[Math.floor(rng() * STARTING_PAIRS.length)];
   return {
     phase: "lobby",
-    pair: [pair[0], pair[1]],
+    words: [pair[0], pair[1]],
     submissions: {},
     used: [normalizeWord(pair[0]), normalizeWord(pair[1])],
     round: 1,
@@ -133,13 +145,15 @@ export function everyoneSubmitted(
 }
 
 /**
- * Resolve a round. Unanimous agreement wins; otherwise the submitted words
- * become the next pair.
+ * Resolve a round. Unanimous agreement wins; otherwise EVERY distinct submitted
+ * word becomes the next prompt.
  *
- * With 3+ players there can be more than two distinct answers, and the original
- * rules only describe two. We take the two most recent distinct submissions in
- * player order — enough to keep the loop going without inventing a scoring rule
- * nobody asked for.
+ * Keeping all of them is what makes this scale past two players: truncating to
+ * the first two would silently discard the other answers, so the group would be
+ * converging on a prompt most of them never saw.
+ *
+ * Duplicates collapse, which is the mechanism of progress — when two of four
+ * players agree, the next round starts from three words instead of four.
  */
 export function resolveRound(
   state: CodenamesState,
@@ -168,11 +182,10 @@ export function resolveRound(
     };
   }
 
-  const [first, second] = distinct.slice(0, 2);
   return {
     ...state,
     phase: "reveal",
-    pair: [first.toUpperCase(), second.toUpperCase()],
+    words: distinct.map((w) => w.toUpperCase()),
     submissions: {},
     used: [...state.used, ...distinct],
     round: state.round + 1,

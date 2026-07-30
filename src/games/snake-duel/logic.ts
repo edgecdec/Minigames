@@ -1,8 +1,11 @@
 /**
- * Snake 1v1 — pure rules, no DOM, no sockets.
+ * Snake free-for-all — pure rules, no DOM, no sockets.
  *
  * From the Discord thread (Alukian): "a variant of slither.io where it's locked
  * to a grid like Snake. Or add 1v1 battles."
+ *
+ * Any number of players from 2 up. Everyone spawns at a random spot with a few
+ * seconds of spawn protection, then it is last-snake-standing.
  *
  * Server-authoritative: the server owns the tick and the collision test, and
  * clients only send a desired direction. That is the whole point of a duel —
@@ -28,8 +31,19 @@ export const ROWS = 24;
 export const TICK_MS = 160;
 /** Food on the board at once. More than one keeps players from queueing up. */
 export const FOOD_COUNT = 3;
-/** A duel that neither player can finish shouldn't run forever. */
+/** A round that nobody can finish shouldn't run forever. */
 export const MAX_TICKS = 3_000;
+
+/** Upper bound on players — beyond this the board is more crash than game. */
+export const MAX_PLAYERS = 8;
+
+/**
+ * Ticks of spawn protection. Random spawns can drop two snakes near each other,
+ * and dying in the first second to someone you never saw is the worst possible
+ * start. Protected snakes cannot kill or be killed, but they DO move, so the
+ * time is spent driving clear rather than standing still.
+ */
+export const SPAWN_PROTECT_TICKS = Math.round(3000 / TICK_MS);
 
 export const DIRS = {
   up: { x: 0, y: -1 },
@@ -80,14 +94,77 @@ export interface DuelState {
   wins: Record<string, number>;
 }
 
-/** Opposite corners, heading away from their own wall. */
-const SPAWNS: { at: Cell; dir: Dir }[] = [
-  { at: { x: 3, y: 3 }, dir: DIRS.right },
-  { at: { x: COLS - 4, y: ROWS - 4 }, dir: DIRS.left },
-];
+/** True while a snake still has spawn protection. */
+export function isProtected(state: DuelState): boolean {
+  return state.tick < SPAWN_PROTECT_TICKS;
+}
 
-function spawnSnake(userId: string, index: number): DuelSnake {
-  const spawn = SPAWNS[index % SPAWNS.length];
+/** Ticks of protection left, for the countdown badge. */
+export function protectionLeft(state: DuelState): number {
+  return Math.max(0, SPAWN_PROTECT_TICKS - state.tick);
+}
+
+/**
+ * Pick spawn points at random, keeping them apart.
+ *
+ * MIN_SPAWN_GAP stops a random draw from placing two snakes on adjacent cells,
+ * which spawn protection would only postpone. The margin keeps a new snake off
+ * the wall so its first move can't be into it, and the relaxing loop guarantees
+ * termination on a crowded board rather than spinning forever.
+ */
+const SPAWN_MARGIN = 4;
+const MIN_SPAWN_GAP = 6;
+
+export function pickSpawns(count: number, rng: () => number = Math.random): { at: Cell; dir: Dir }[] {
+  const chosen: { at: Cell; dir: Dir }[] = [];
+  const span = COLS - SPAWN_MARGIN * 2;
+
+  for (let i = 0; i < count; i++) {
+    let best: Cell | null = null;
+    // Relax the spacing requirement if the board is too full to honour it.
+    for (let gap = MIN_SPAWN_GAP; gap >= 0 && !best; gap--) {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        const at = {
+          x: SPAWN_MARGIN + Math.floor(rng() * span),
+          y: SPAWN_MARGIN + Math.floor(rng() * span),
+        };
+        const clear = chosen.every(
+          (c) => Math.abs(c.at.x - at.x) + Math.abs(c.at.y - at.y) >= gap,
+        );
+        if (clear) {
+          best = at;
+          break;
+        }
+      }
+    }
+    const at = best ?? {
+      x: SPAWN_MARGIN + Math.floor(rng() * span),
+      y: SPAWN_MARGIN + Math.floor(rng() * span),
+    };
+    chosen.push({ at, dir: facingOpenBoard(at) });
+  }
+  return chosen;
+}
+
+/**
+ * Face whichever direction has the most room ahead.
+ *
+ * A random facing kills people during spawn protection: walls still kill then,
+ * and a snake dropped near an edge pointing at it crashes before the player has
+ * any reason to be watching. Protection is supposed to prevent exactly that.
+ */
+function facingOpenBoard(at: Cell): Dir {
+  const runway = [
+    { dir: DIRS.right, room: COLS - 1 - at.x },
+    { dir: DIRS.left, room: at.x },
+    { dir: DIRS.down, room: ROWS - 1 - at.y },
+    { dir: DIRS.up, room: at.y },
+  ];
+  runway.sort((a, b) => b.room - a.room);
+  return runway[0].dir;
+}
+
+function spawnSnake(userId: string, spawn: { at: Cell; dir: Dir }): DuelSnake {
   // Body trails behind the head so the snake isn't instantly self-colliding.
   const body: Cell[] = [0, 1, 2].map((i) => ({
     x: spawn.at.x - spawn.dir.x * i,
@@ -132,9 +209,11 @@ export function createDuel(
   rng: () => number = Math.random,
   wins: Record<string, number> = {},
 ): DuelState {
-  const snakes = userIds.slice(0, 2).map((id, i) => spawnSnake(id, i));
+  const ids = userIds.slice(0, MAX_PLAYERS);
+  const spawns = pickSpawns(ids.length, rng);
+  const snakes = ids.map((id, i) => spawnSnake(id, spawns[i]));
   const state: DuelState = {
-    phase: userIds.length < 2 ? "waiting" : "countdown",
+    phase: ids.length < 2 ? "waiting" : "countdown",
     snakes,
     food: [],
     tick: 0,
@@ -211,6 +290,10 @@ export function step(state: DuelState, rng: () => number = Math.random): DuelSta
   });
 
   const deaths: (DuelSnake["causeOfDeath"] | null)[] = state.snakes.map(() => null);
+  // Spawn protection covers snake-vs-snake only. Walls and your own body still
+  // kill: otherwise the protected window would be a period of no consequences,
+  // and a player could park against a wall waiting for it to expire.
+  const shielded = isProtected(state);
 
   state.snakes.forEach((s, i) => {
     if (!s.alive) return;
@@ -220,17 +303,19 @@ export function step(state: DuelState, rng: () => number = Math.random): DuelSta
       deaths[i] = "wall";
       return;
     }
-    // Head-on: both heads target the same cell. Mutual, so it's a draw.
+    if (futureBodies[i].some((c) => samePos(c, head))) {
+      deaths[i] = "self";
+      return;
+    }
+    if (shielded) return;
+
+    // Head-on: two heads target the same cell. Mutual, so nobody is at fault.
     for (let j = 0; j < state.snakes.length; j++) {
       if (j === i || !state.snakes[j].alive) continue;
       if (samePos(head, heads[j])) {
         deaths[i] = "head-on";
         return;
       }
-    }
-    if (futureBodies[i].some((c) => samePos(c, head))) {
-      deaths[i] = "self";
-      return;
     }
     for (let j = 0; j < state.snakes.length; j++) {
       if (j === i) continue;
@@ -271,12 +356,17 @@ export function step(state: DuelState, rng: () => number = Math.random): DuelSta
   return resolveOutcome(next);
 }
 
-/** Decide whether the duel has ended, and who won. */
+/**
+ * Decide whether the round has ended, and who won.
+ *
+ * Free-for-all, so the round continues while two or more snakes live — a death
+ * in a 4-player game eliminates that player, it does not end the game.
+ */
 export function resolveOutcome(state: DuelState): DuelState {
   const alive = state.snakes.filter((s) => s.alive);
 
   if (alive.length > 1) {
-    // A stalemate cap so a duel can't run forever; longest snake takes it.
+    // A stalemate cap so a round can't run forever; longest snake takes it.
     if (state.tick >= MAX_TICKS) {
       const best = Math.max(...state.snakes.map((s) => s.score));
       const leaders = state.snakes.filter((s) => s.score === best);
@@ -291,7 +381,7 @@ export function resolveOutcome(state: DuelState): DuelState {
     return { ...state, phase: "over", winner, wins: bumpWins(state.wins, winner) };
   }
 
-  // Nobody left — simultaneous death is a draw.
+  // Nobody left — everyone died on the same tick, so it's a draw.
   return { ...state, phase: "over", winner: null, wins: state.wins };
 }
 

@@ -1,5 +1,5 @@
 /**
- * Snake 1v1 room handlers.
+ * Snake free-for-all room handlers.
  *
  * Server-authoritative and the first game here with a real tick loop: the
  * server advances the board on a timer and broadcasts, while clients only send a
@@ -16,6 +16,16 @@ const ROWS = 24;
 const TICK_MS = 160;
 const FOOD_COUNT = 3;
 const MAX_TICKS = 3000;
+const MAX_PLAYERS = 8;
+/**
+ * Spawn protection: snake-vs-snake collisions are off for this long. Random
+ * spawns can land two players near each other, and dying in the first second to
+ * someone you never saw is the worst possible start. Walls and your own body
+ * still kill, so the window isn't consequence-free.
+ */
+const SPAWN_PROTECT_TICKS = Math.round(3000 / TICK_MS);
+const SPAWN_MARGIN = 4;
+const MIN_SPAWN_GAP = 6;
 
 const DIRS = {
   up: { x: 0, y: -1 },
@@ -24,17 +34,57 @@ const DIRS = {
   right: { x: 1, y: 0 },
 };
 
-const SPAWNS = [
-  { at: { x: 3, y: 3 }, dir: DIRS.right },
-  { at: { x: COLS - 4, y: ROWS - 4 }, dir: DIRS.left },
-];
+/** Random spawns, kept apart so protection isn't just postponing a crash. */
+function pickSpawns(count) {
+  const chosen = [];
+  const span = COLS - SPAWN_MARGIN * 2;
+  for (let i = 0; i < count; i++) {
+    let best = null;
+    // Relax the spacing if the board is too crowded to honour it, so this
+    // terminates instead of spinning.
+    for (let gap = MIN_SPAWN_GAP; gap >= 0 && !best; gap--) {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        const at = {
+          x: SPAWN_MARGIN + Math.floor(Math.random() * span),
+          y: SPAWN_MARGIN + Math.floor(Math.random() * span),
+        };
+        if (chosen.every((c) => Math.abs(c.at.x - at.x) + Math.abs(c.at.y - at.y) >= gap)) {
+          best = at;
+          break;
+        }
+      }
+    }
+    const at = best || {
+      x: SPAWN_MARGIN + Math.floor(Math.random() * span),
+      y: SPAWN_MARGIN + Math.floor(Math.random() * span),
+    };
+    chosen.push({ at, dir: facingOpenBoard(at) });
+  }
+  return chosen;
+}
+
+/**
+ * Face whichever direction has the most room ahead. A random facing kills people
+ * during spawn protection — walls still kill then, and a snake dropped near an
+ * edge pointing at it crashes before the player has reason to be watching.
+ * Mirrors logic.ts.
+ */
+function facingOpenBoard(at) {
+  const runway = [
+    { dir: DIRS.right, room: COLS - 1 - at.x },
+    { dir: DIRS.left, room: at.x },
+    { dir: DIRS.down, room: ROWS - 1 - at.y },
+    { dir: DIRS.up, room: at.y },
+  ];
+  runway.sort((a, b) => b.room - a.room);
+  return runway[0].dir;
+}
 
 function samePos(a, b) {
   return a.x === b.x && a.y === b.y;
 }
 
-function spawnSnake(userId, index) {
-  const spawn = SPAWNS[index % SPAWNS.length];
+function spawnSnake(userId, spawn) {
   const body = [0, 1, 2].map((i) => ({
     x: spawn.at.x - spawn.dir.x * i,
     y: spawn.at.y - spawn.dir.y * i,
@@ -69,7 +119,9 @@ function placeFood(taken, count) {
 }
 
 function createDuel(userIds, wins, phase) {
-  const snakes = userIds.slice(0, 2).map((id, i) => spawnSnake(id, i));
+  const ids = userIds.slice(0, MAX_PLAYERS);
+  const spawns = pickSpawns(ids.length);
+  const snakes = ids.map((id, i) => spawnSnake(id, spawns[i]));
   const state = {
     // Always "waiting" unless the caller asks for a phase. A duel must be
     // started deliberately: deriving the phase from the player count made a
@@ -160,6 +212,8 @@ function step(state) {
   );
 
   const deaths = state.snakes.map(() => null);
+  // Protection covers snake-vs-snake only; walls and your own body still kill.
+  const shielded = state.tick < SPAWN_PROTECT_TICKS;
   state.snakes.forEach((s, i) => {
     if (!s.alive) return;
     const head = heads[i];
@@ -167,16 +221,17 @@ function step(state) {
       deaths[i] = "wall";
       return;
     }
+    if (futureBodies[i].some((c) => samePos(c, head))) {
+      deaths[i] = "self";
+      return;
+    }
+    if (shielded) return;
     for (let j = 0; j < state.snakes.length; j++) {
       if (j === i || !state.snakes[j].alive) continue;
       if (samePos(head, heads[j])) {
         deaths[i] = "head-on";
         return;
       }
-    }
-    if (futureBodies[i].some((c) => samePos(c, head))) {
-      deaths[i] = "self";
-      return;
     }
     for (let j = 0; j < state.snakes.length; j++) {
       if (j === i) continue;
@@ -264,7 +319,7 @@ module.exports = {
   minPlayers: 2,
 
   createState(room) {
-    return createDuel(connectedIds(room).slice(0, 2), {});
+    return createDuel(connectedIds(room).slice(0, MAX_PLAYERS), {});
   },
 
   /** The timer handle must never be serialised to a client. */
@@ -285,6 +340,8 @@ module.exports = {
       wins: state.wins,
       cols: COLS,
       rows: ROWS,
+      protectedTicks: Math.max(0, SPAWN_PROTECT_TICKS - state.tick),
+      tickMs: TICK_MS,
     };
   },
 
@@ -295,9 +352,9 @@ module.exports = {
       case "start": {
         if (!ctx.isHost) return false;
         if (state.phase === "playing" || state.phase === "countdown") return false;
-        const ids = connectedIds(ctx.room).slice(0, 2);
+        const ids = connectedIds(ctx.room).slice(0, MAX_PLAYERS);
         if (ids.length < 2) {
-          ctx.emitToPlayer("room_error", { message: "Snake 1v1 needs 2 players" });
+          ctx.emitToPlayer("room_error", { message: "Needs at least 2 players" });
           return false;
         }
         stopTimer(state);
@@ -325,7 +382,7 @@ module.exports = {
 
       case "again": {
         if (!ctx.isHost || state.phase !== "over") return false;
-        const ids = connectedIds(ctx.room).slice(0, 2);
+        const ids = connectedIds(ctx.room).slice(0, MAX_PLAYERS);
         if (ids.length < 2) {
           ctx.emitToPlayer("room_error", { message: "Need 2 players for a rematch" });
           return false;

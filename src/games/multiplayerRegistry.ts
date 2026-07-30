@@ -38,6 +38,18 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
       "still moves you forward. Words already used can't be used again.",
     status: "live",
   },
+  {
+    slug: "snake-duel",
+    title: "Snake 1v1",
+    blurb: "Grid-locked duel. Grow, cut them off, don't crash first.",
+    icon: "🐍",
+    minPlayers: 2,
+    howToPlay:
+      "Both snakes move on the same server tick. Eat food to grow, and try to make " +
+      "the other player crash into a wall, themselves, or you. A head-on collision is " +
+      "a draw. Last one alive takes the round.",
+    status: "live",
+  },
 ];
 
 export function getMultiplayerGame(slug: string): MultiplayerGameMeta | undefined {

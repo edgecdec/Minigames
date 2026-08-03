@@ -88,6 +88,14 @@ export interface CodenamesState {
   /** Points earned in the round just revealed, for a per-round readout. */
   lastRoundSync: Record<string, number> | null;
   /**
+   * Games played this session, starting at 1 and never reset.
+   *
+   * `round` restarts at 1 on a rematch, so it can't identify a win on its own:
+   * a client keying a once-only effect (the win confetti) on the round alone
+   * would treat the second game's win as one it had already handled.
+   */
+  gameNumber: number;
+  /**
    * How many words were on screen before the current reveal, so the UI can say
    * whether the group narrowed or widened. Comparing against the number of
    * players who answered would be wrong: going 3 -> 4 with five players is a
@@ -144,6 +152,7 @@ export function createState(
     syncPoints: {},
     lastRoundSync: null,
     prevWordCount: words.length,
+    gameNumber: 1,
   };
 }
 

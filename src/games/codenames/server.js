@@ -75,6 +75,9 @@ function freshState(playerCount) {
     syncPoints: {},
     lastRoundSync: null,
     prevWordCount: words.length,
+    // Never reset: `round` restarts on a rematch, so a client can't use it alone
+    // to tell one game's win from the next. Mirrors logic.ts.
+    gameNumber: 1,
   };
 }
 
@@ -170,6 +173,7 @@ module.exports = {
       syncPoints: state.syncPoints,
       lastRoundSync: state.lastRoundSync,
       prevWordCount: state.prevWordCount,
+      gameNumber: state.gameNumber,
       /** Ceiling on the prompt: it can never exceed the number of players. */
       playerCount: connectedIds(room).length,
       // Who has locked in, not what they said.
@@ -242,6 +246,7 @@ module.exports = {
           ...freshState(connectedIds(room).length),
           phase: "submitting",
           syncPoints: state.syncPoints,
+          gameNumber: (state.gameNumber || 1) + 1,
         });
         return true;
       }

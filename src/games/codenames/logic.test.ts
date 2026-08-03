@@ -322,5 +322,22 @@ t("everyone level: most and least are all", (() => {
   t("the winning word is the one on screen", g5.words[0] === g5.winningWord);
 }
 
+// --- game counter: a rematch must be distinguishable from the first game ---
+t("a new game starts at gameNumber 1", createState(Math.random, 3).gameNumber === 1);
+t("gameNumber survives a resolve", (() => {
+  let g = startGame(createState(Math.random, 2));
+  g = submitWord(g, "a", "alpha").state;
+  g = submitWord(g, "b", "bravo").state;
+  return resolveRound(g, ["a", "b"]).gameNumber === 1;
+})());
+// The win key the UI builds must differ between game 1 and game 2 even though
+// `round` restarts at 1 — otherwise a rematch win looks already-celebrated and
+// the confetti is suppressed. Build it the same way the component does.
+const winKey = (gameNumber: number, round: number) => `won-${gameNumber}-${round}`;
+t("win key includes the game number", winKey(2, 1) === "won-2-1");
+t("same round in a later game yields a different key",
+  winKey(1, 1) !== winKey(2, 1), `${winKey(1, 1)} vs ${winKey(2, 1)}`);
+t("same game and round yields a stable key", winKey(3, 4) === winKey(3, 4));
+
 console.log("---", "pass:", pass, "fail:", fail);
 if (fail) process.exit(1);

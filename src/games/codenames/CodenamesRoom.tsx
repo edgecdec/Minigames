@@ -8,6 +8,7 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import Celebration from "@/components/Celebration";
 import PlayerList from "@/components/multiplayer/PlayerList";
 import { MAX_WORD_LENGTH } from "./logic";
 import type { RoomPlayer } from "@/lib/useRoom";
@@ -29,6 +30,8 @@ export interface CodenamesPublicState {
   /** Words on screen before this reveal, so we can say narrowed vs widened. */
   prevWordCount: number;
   playerCount: number;
+  /** Increments per rematch; `round` alone restarts and would suppress reruns. */
+  gameNumber: number;
 }
 
 /**
@@ -323,6 +326,18 @@ export default function CodenamesRoom({
           )}
         </Stack>
       ) : null}
+
+      {/*
+        Converging on one word is the win, so that's the moment worth marking.
+        Keyed on game+round for two reasons: a room re-broadcasts its state on
+        every event, so keying on the phase alone would re-fire endlessly while
+        the win screen sits there — and a rematch resets `round` to 1, so the
+        round alone would make the next win look already-handled.
+      */}
+      <Celebration
+        active={state.phase === "won"}
+        celebrationKey={`won-${state.gameNumber}-${state.round}`}
+      />
 
       {state.phase === "won" ? (
         <Stack spacing={1.5} alignItems="center">

@@ -6,47 +6,76 @@ import Button from "@mui/material/Button";
 import LinearProgress from "@mui/material/LinearProgress";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import GameSidebar, { percent, type SidebarConfig } from "@/components/GameSidebar";
 import { useGlobalLeaderboard } from "@/lib/useGlobalLeaderboard";
 import ScoreBar from "@/components/ScoreBar";
 import { useBestScore, useLeaderboard, useLifetimeStats } from "@/lib/useLocalStorage";
+import { useLocalStorage } from "@/lib/useLocalStorage";
 import { useCountdown } from "@/lib/useCountdown";
-import { createGame, score, submit, timeOut, type DoubleItState } from "./logic";
+import {
+  MULTIPLIERS,
+  DEFAULT_MULTIPLIER,
+  boardSlug,
+  createGame,
+  isMultiplier,
+  score,
+  submit,
+  target,
+  timeOut,
+  type DoubleItState,
+  type Multiplier,
+} from "./logic";
 
 const COUNTERS = { runs: 0, rounds: 0, correct: 0, wrong: 0, timeouts: 0 };
 
-const SIDEBAR: SidebarConfig<typeof COUNTERS> = {
-  leaderboard: { title: "Best runs", unit: "rounds" },
-  global: { unit: "rounds" },
-  stats: {
-    rows: (c) => [
-      { label: "Runs played", value: c.runs },
-      { label: "Rounds cleared", value: c.rounds },
-      {
-        label: "Correct answers",
-        value: c.correct,
-        hint: percent(c.correct, c.correct + c.wrong),
-      },
-      { label: "Ran out of time", value: c.timeouts },
-      {
-        label: "Average run",
-        value: c.runs > 0 ? (c.rounds / c.runs).toFixed(1) : "—",
-      },
-    ],
-  },
-};
+// Boards and stats are per-multiplier — the mode is baked into the slug.
+function sidebarFor(m: Multiplier): SidebarConfig<typeof COUNTERS> {
+  return {
+    leaderboard: { title: `Best ×${m} runs`, unit: "rounds" },
+    global: { title: `Global ×${m}`, unit: "rounds" },
+    stats: {
+      title: `×${m} stats`,
+      rows: (c) => [
+        { label: "Runs played", value: c.runs },
+        { label: "Rounds cleared", value: c.rounds },
+        {
+          label: "Correct answers",
+          value: c.correct,
+          hint: percent(c.correct, c.correct + c.wrong),
+        },
+        { label: "Ran out of time", value: c.timeouts },
+        {
+          label: "Average run",
+          value: c.runs > 0 ? (c.rounds / c.runs).toFixed(1) : "—",
+        },
+      ],
+    },
+  };
+}
 
 export default function DoubleItGame() {
-  const [state, setState] = useState<DoubleItState>(() => createGame());
+  // Remember the player's last mode so returning lands on the same one.
+  const [savedMult, setSavedMult] = useLocalStorage<number>(
+    "minigames:double-it:multiplier",
+    DEFAULT_MULTIPLIER,
+  );
+  const multiplier: Multiplier = isMultiplier(savedMult) ? savedMult : DEFAULT_MULTIPLIER;
+  const slug = boardSlug(multiplier);
+
+  const [state, setState] = useState<DoubleItState>(() => createGame(multiplier));
   const [started, setStarted] = useState(false);
   const [answer, setAnswer] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [best, submitBest, bestLoaded] = useBestScore("double-it");
-  const [leaderboard, submitLeaderboard, leaderboardLoaded] = useLeaderboard("double-it");
-  const [stats, bumpStats, statsLoaded] = useLifetimeStats("double-it", COUNTERS);
-  const globalBoard = useGlobalLeaderboard("double-it");
+  // All storage is keyed to the mode's board slug, so each ×N has its own
+  // history, best, stats, and global board.
+  const [best, submitBest, bestLoaded] = useBestScore(slug);
+  const [leaderboard, submitLeaderboard, leaderboardLoaded] = useLeaderboard(slug);
+  const [stats, bumpStats, statsLoaded] = useLifetimeStats(slug, COUNTERS);
+  const globalBoard = useGlobalLeaderboard(slug);
 
   const handleExpire = useCallback(() => {
     setState((s) => timeOut(s));
@@ -55,14 +84,25 @@ export default function DoubleItGame() {
   const { remainingMs, start, stop } = useCountdown(handleExpire);
 
   const begin = useCallback(() => {
-    const game = createGame();
+    const game = createGame(multiplier);
     setState(game);
     setAnswer("");
     setStarted(true);
     start(game.allowedMs);
     // Focus after the state flush so the field exists to receive it.
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, [start]);
+  }, [multiplier, start]);
+
+  const chooseMultiplier = useCallback(
+    (m: Multiplier) => {
+      setSavedMult(m);
+      stop();
+      setStarted(false);
+      setAnswer("");
+      setState(createGame(m));
+    },
+    [setSavedMult, stop],
+  );
 
   const onSubmit = useCallback(() => {
     if (state.status !== "playing") return;
@@ -112,6 +152,25 @@ export default function DoubleItGame() {
         ]}
       />
 
+      {/* Mode picker. Disabled mid-run so you can't switch difficulty partway
+          and post the result to the wrong board. */}
+      <ToggleButtonGroup
+        value={multiplier}
+        exclusive
+        onChange={(_, m) => {
+          if (m !== null && isMultiplier(m)) chooseMultiplier(m);
+        }}
+        size="small"
+        disabled={started && !dead}
+        sx={{ flexWrap: "wrap", justifyContent: "center" }}
+      >
+        {MULTIPLIERS.map((m) => (
+          <ToggleButton key={m} value={m} sx={{ px: 1.5, fontWeight: 700 }}>
+            ×{m}
+          </ToggleButton>
+        ))}
+      </ToggleButtonGroup>
+
       <Box sx={{ width: "100%", maxWidth: 360 }}>
         <LinearProgress
           variant="determinate"
@@ -144,12 +203,13 @@ export default function DoubleItGame() {
       {!started ? (
         <Stack spacing={2} alignItems="center" sx={{ py: 3 }}>
           <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-            You get a number. Type double it before the clock runs out.
+            You get a number. Multiply it by <b>×{multiplier}</b> before the clock
+            runs out.
             <br />
             Every round the clock gets 0.1s shorter.
           </Typography>
           <Button variant="contained" size="large" onClick={begin}>
-            Start
+            Start ×{multiplier}
           </Button>
         </Stack>
       ) : dead ? (
@@ -158,13 +218,15 @@ export default function DoubleItGame() {
             {state.lostTo === "time" ? "⏱ Out of time" : "✗ Wrong"}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-            {state.prompt.toLocaleString()} × 2 = {(state.prompt * 2).toLocaleString()}
+            {state.prompt.toLocaleString()} × {state.multiplier} ={" "}
+            {target(state).toLocaleString()}
             {state.lostTo === "wrong" && state.lastAnswer !== undefined
               ? `, you said ${state.lastAnswer.toLocaleString()}`
               : ""}
           </Typography>
           <Typography variant="body1">
-            Cleared <b>{score(state)}</b> {score(state) === 1 ? "round" : "rounds"}
+            Cleared <b>{score(state)}</b> {score(state) === 1 ? "round" : "rounds"} on ×
+            {state.multiplier}
           </Typography>
           <Button variant="contained" onClick={begin}>
             Play again
@@ -172,11 +234,16 @@ export default function DoubleItGame() {
         </Stack>
       ) : (
         <Stack spacing={2} alignItems="center" sx={{ py: 1 }}>
-          <Typography
-            sx={{ fontSize: "3.5rem", fontWeight: 800, lineHeight: 1, letterSpacing: "-0.03em" }}
-          >
-            {state.prompt.toLocaleString()}
-          </Typography>
+          <Stack direction="row" spacing={1.5} alignItems="baseline">
+            <Typography
+              sx={{ fontSize: "3.5rem", fontWeight: 800, lineHeight: 1, letterSpacing: "-0.03em" }}
+            >
+              {state.prompt.toLocaleString()}
+            </Typography>
+            <Typography sx={{ fontSize: "1.5rem", fontWeight: 700, color: "text.secondary" }}>
+              × {multiplier}
+            </Typography>
+          </Stack>
           <TextField
             inputRef={inputRef}
             value={answer}
@@ -184,7 +251,7 @@ export default function DoubleItGame() {
             onKeyDown={(e) => {
               if (e.key === "Enter") onSubmit();
             }}
-            placeholder="double it"
+            placeholder={`× ${multiplier}`}
             autoComplete="off"
             inputProps={{
               inputMode: "numeric",
@@ -199,7 +266,7 @@ export default function DoubleItGame() {
       )}
 
       <GameSidebar
-        config={SIDEBAR}
+        config={sidebarFor(multiplier)}
         entries={leaderboard}
         entriesLoaded={leaderboardLoaded}
         counters={stats}

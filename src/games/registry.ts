@@ -7,6 +7,8 @@
  * The menu, routing, and nav all read from this list.
  */
 
+import { MULTIPLIERS, boardSlug } from "./double-it/logic";
+
 export type GameStatus = "live" | "wip";
 
 export interface GameMeta {
@@ -28,6 +30,27 @@ export interface GameMeta {
    * authoritative one and quietly undo it.
    */
   serverScored?: boolean;
+  /**
+   * Extra leaderboard keys this game owns beyond its own slug — for games with
+   * per-mode boards (e.g. Double It! keeps a separate board per multiplier).
+   *
+   * The shared leaderboard API validates every submission against a known slug,
+   * so a mode board must be listed here or the API rejects it. That's the point:
+   * it keeps board keys to a fixed, server-known set rather than letting a client
+   * invent `double-it:9999x` and spawn junk boards.
+   */
+  boardVariants?: string[];
+}
+
+/**
+ * Resolve a board slug — a game's own slug OR one of its variants — to the game
+ * that owns it. Returns undefined for an unknown slug, so callers get one place
+ * to both validate a board key and reach the owning game's flags.
+ */
+export function getGameForBoard(slug: string): GameMeta | undefined {
+  return GAMES.find(
+    (g) => g.slug === slug || (g.boardVariants ?? []).includes(slug),
+  );
 }
 
 export const GAMES: GameMeta[] = [
@@ -66,10 +89,12 @@ export const GAMES: GameMeta[] = [
   {
     slug: "double-it",
     title: "Double It!",
-    blurb: "Double the number before the clock runs out. It keeps getting shorter.",
+    blurb: "Multiply the number before the clock runs out. ×2 up to ×9.",
     icon: "✖️",
-    controls: "Type the answer, Enter to submit",
+    controls: "Pick a multiplier, then type the answer",
     status: "live",
+    // One board per multiplier: ×9 is a far harder game than ×2.
+    boardVariants: MULTIPLIERS.map(boardSlug),
   },
   {
     slug: "rngdle",

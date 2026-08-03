@@ -8,14 +8,15 @@ import {
 } from "@/lib/identity";
 import { MAX_BODY_BYTES, cleanName, cleanScore } from "@/lib/names";
 import { rateLimit } from "@/lib/rateLimit";
-import { getGame } from "@/games/registry";
+import { getGameForBoard } from "@/games/registry";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/leaderboard?game=snake — top scores plus the caller's standing. */
 export async function GET(req: Request) {
   const slug = new URL(req.url).searchParams.get("game") ?? "";
-  if (!getGame(slug)) {
+  // Accepts a game slug or a declared board variant (e.g. "double-it:5x").
+  if (!getGameForBoard(slug)) {
     return NextResponse.json({ error: "Unknown game" }, { status: 400 });
   }
 
@@ -55,7 +56,7 @@ export async function POST(req: Request) {
   const { game, name, score } = body as Record<string, unknown>;
 
   const slug = typeof game === "string" ? game : "";
-  const meta = getGame(slug);
+  const meta = getGameForBoard(slug);
   if (!meta) {
     return NextResponse.json({ error: "Unknown game" }, { status: 400 });
   }

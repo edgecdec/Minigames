@@ -52,6 +52,20 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
       "during protection.",
     status: "live",
   },
+  {
+    slug: "double-it-duel",
+    title: "Double It Duel",
+    blurb: "Multiplication under a shared clock. Take too long and you fund everyone else.",
+    icon: "⏳",
+    minPlayers: 2,
+    howToPlay:
+      "Everyone starts with the same clock, but only the player on turn is losing time. " +
+      "Answer correctly and the time you took — minus the amount that falls into the abyss — " +
+      "is split among everyone else. Overflow above the starting clock is allowed, so answering " +
+      "fast banks a real cushion. Run out of time or answer wrong and you're out. The host sets " +
+      "the multiplier, the starting clock, and the abyss.",
+    status: "live",
+  },
 ];
 
 export function getMultiplayerGame(slug: string): MultiplayerGameMeta | undefined {

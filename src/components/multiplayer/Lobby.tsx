@@ -9,6 +9,7 @@ import RoomHeader from "@/components/multiplayer/RoomHeader";
 import RoomJoin from "@/components/multiplayer/RoomJoin";
 import CodenamesRoom, { type CodenamesPublicState } from "@/games/codenames/CodenamesRoom";
 import SnakeDuelRoom, { type DuelPublicState } from "@/games/snake-duel/SnakeDuelRoom";
+import DoubleItDuelRoom, { type DuelPublicState as DoubleItDuelState } from "@/games/double-it-duel/DoubleItDuelRoom";
 import { useRoom } from "@/lib/useRoom";
 import { useLocalStorage } from "@/lib/useLocalStorage";
 
@@ -55,6 +56,16 @@ export default function Lobby() {
         return (
           <SnakeDuelRoom
             state={state.gameState as DuelPublicState}
+            players={state.players}
+            userId={room.userId}
+            isHost={room.isHost}
+            send={room.send}
+          />
+        );
+      case "double-it-duel":
+        return (
+          <DoubleItDuelRoom
+            state={state.gameState as DoubleItDuelState}
             players={state.players}
             userId={room.userId}
             isHost={room.isHost}

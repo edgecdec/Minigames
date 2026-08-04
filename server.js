@@ -84,9 +84,11 @@ function attachMultiplayer(httpServer) {
     const rooms = require("./src/lib/rooms.js");
     const codenames = require("./src/games/codenames/server.js");
     const snakeDuel = require("./src/games/snake-duel/server.js");
+    const doubleItDuel = require("./src/games/double-it-duel/server.js");
 
     rooms.registerGame(codenames.slug, codenames);
     rooms.registerGame(snakeDuel.slug, snakeDuel);
+    rooms.registerGame(doubleItDuel.slug, doubleItDuel);
 
     const io = new Server(httpServer, {
       // Same origin as the site, so no CORS allowance is needed.

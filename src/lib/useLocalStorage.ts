@@ -16,13 +16,25 @@ export function useLocalStorage<T>(
   const [value, setValue] = useState<T>(initial);
   const [loaded, setLoaded] = useState(false);
 
+  // `initial` is often an inline literal ({} or []), so a new reference every
+  // render. Snapshot it to keep it out of the effect's dependencies.
+  const initialRef = useRef(initial);
+
   useEffect(() => {
+    let next = initialRef.current;
     try {
       const raw = window.localStorage.getItem(key);
-      if (raw !== null) setValue(JSON.parse(raw) as T);
+      if (raw !== null) next = JSON.parse(raw) as T;
     } catch {
       // Private mode, quota, or corrupt JSON — fall back to `initial`.
     }
+    // ALWAYS assign, even when the key holds nothing.
+    //
+    // Leaving the old value in place when the key changes leaks one key's data
+    // into another: Double It keys its board per multiplier, so switching from
+    // ×3 to a never-played ×8 kept ×3's rows in state, and the next write saved
+    // them under the ×8 key. Any game with per-mode keys had the same bug.
+    setValue(next);
     setLoaded(true);
   }, [key]);
 

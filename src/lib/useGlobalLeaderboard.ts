@@ -90,6 +90,8 @@ export function useGlobalLeaderboard(gameSlug: string) {
   );
 
   return {
+    /** The board this hook is bound to, so callers can key per-board UI state. */
+    slug: gameSlug,
     entries,
     me,
     loading,

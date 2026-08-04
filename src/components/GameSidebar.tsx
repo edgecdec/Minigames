@@ -65,6 +65,7 @@ export default function GameSidebar<T extends Record<string, number>>({
     <Stack spacing={2} sx={{ width: "100%", mt: 2 }}>
       {config.global && globalBoard ? (
         <GlobalLeaderboard
+          boardSlug={globalBoard.slug}
           entries={globalBoard.entries}
           me={globalBoard.me}
           loading={globalBoard.loading}

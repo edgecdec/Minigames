@@ -26,6 +26,7 @@ export default function GlobalLeaderboard({
   title = "Global leaderboard",
   pendingScore,
   onSubmit,
+  boardSlug,
 }: {
   entries: BoardEntry[];
   me: MyEntry | null;
@@ -37,13 +38,34 @@ export default function GlobalLeaderboard({
   /** Set when a finished run is waiting to be posted; shows the name prompt. */
   pendingScore?: number | null;
   onSubmit?: (score: number, name: string) => Promise<boolean>;
+  /** Identifies the board, so switching modes re-offers the prompt. */
+  boardSlug?: string;
 }) {
   const [draft, setDraft] = useState(name);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
+  /**
+   * Which (board, score) pair has already been posted.
+   *
+   * A plain `done` boolean latched forever: this component stays mounted while
+   * a game switches modes, so once you posted on Double It ×3 the prompt never
+   * came back for ×4–×9. Recording WHAT was posted means a different board — or
+   * a different score on the same board — offers the prompt again, while a
+   * re-render with the same run still can't double-submit.
+   */
+  const [postedKey, setPostedKey] = useState<string | null>(null);
+
+  // Keyed on the board slug rather than the title: two modes could share a
+  // title, and the slug is what actually decides where the score lands.
+  const pendingKey =
+    typeof pendingScore === "number"
+      ? `${boardSlug ?? title}:${pendingScore}`
+      : null;
 
   const showPrompt =
-    typeof pendingScore === "number" && pendingScore > 0 && !done && !!onSubmit;
+    typeof pendingScore === "number" &&
+    pendingScore > 0 &&
+    pendingKey !== postedKey &&
+    !!onSubmit;
 
   async function handleSubmit() {
     if (!onSubmit || typeof pendingScore !== "number") return;
@@ -52,7 +74,7 @@ export default function GlobalLeaderboard({
     setBusy(true);
     const ok = await onSubmit(pendingScore, trimmed);
     setBusy(false);
-    if (ok) setDone(true);
+    if (ok) setPostedKey(pendingKey);
   }
 
   return (

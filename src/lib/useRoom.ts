@@ -10,9 +10,18 @@ export interface RoomPlayer {
   connected: boolean;
 }
 
+export interface RoomPaused {
+  /** userId who paused it, or null when the server did. */
+  by: string | null;
+  reason: "host" | "restart" | string;
+  at: number;
+}
+
 export interface RoomState {
   roomCode: string;
   hostId: string;
+  /** Non-null while the game is frozen. */
+  paused: RoomPaused | null;
   /** null while the lobby hasn't chosen a game yet. */
   game: string | null;
   players: RoomPlayer[];
@@ -116,6 +125,15 @@ export function useRoom() {
     socketRef.current?.emit("select_game", { game });
   }, []);
 
+  /** Host-only; the server enforces that too. */
+  const pause = useCallback(() => {
+    socketRef.current?.emit("pause_game");
+  }, []);
+
+  const resume = useCallback(() => {
+    socketRef.current?.emit("resume_game");
+  }, []);
+
   /** Send a game-specific event. */
   const send = useCallback((event: string, data?: unknown) => {
     socketRef.current?.emit("game_event", { event, data });
@@ -137,6 +155,8 @@ export function useRoom() {
     join,
     leave,
     selectGame,
+    pause,
+    resume,
     send,
     setName,
     clearError: () => setError(null),

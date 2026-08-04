@@ -212,9 +212,19 @@ module.exports = {
         userId: p.userId,
         // Send the LIVE clock so a client needs no local timing model: only the
         // player on turn is burning time.
+        //
+        // `turnStartedAt` is null while paused, and `now - null` evaluates to a
+        // huge number — which made a paused clock render as 0 even though the
+        // stored value was correct. Report the banked figure whenever the turn
+        // isn't actually running.
         ms: Math.max(
           0,
-          state.phase === "playing" && p.alive && active && p.userId === active.userId
+          state.phase === "playing" &&
+          !room.paused &&
+          state.turnStartedAt &&
+          p.alive &&
+          active &&
+          p.userId === active.userId
             ? p.ms - (now - state.turnStartedAt)
             : p.ms,
         ),
@@ -337,6 +347,35 @@ module.exports = {
       default:
         return false;
     }
+  },
+
+  /**
+   * Freeze the clock.
+   *
+   * The active player's remaining time is derived from `turnStartedAt`, so the
+   * elapsed portion of the turn MUST be banked into `ms` before the timer stops.
+   * Skipping that would hand back the whole turn on resume — pause would become
+   * a way to refund your own thinking time.
+   */
+  onPause(ctx) {
+    const state = ctx.state;
+    if (!state || state.phase !== "playing") return;
+    const active = state.players[state.turnIndex];
+    if (active && active.alive) {
+      const spent = Math.max(0, Date.now() - state.turnStartedAt);
+      // Clamp: a long pause must not push the clock negative behind our back.
+      active.ms = Math.max(0, active.ms - spent);
+    }
+    state.turnStartedAt = null;
+    stopTimer(state);
+  },
+
+  /** Re-base the turn to now, so the outage costs the active player nothing. */
+  onResume(ctx) {
+    const state = ctx.state;
+    if (!state || state.phase !== "playing") return;
+    state.turnStartedAt = Date.now();
+    startTimer(ctx);
   },
 
   /** A player leaving must not stall the table on a turn nobody can take. */

@@ -12,10 +12,15 @@ export default function RoomHeader({
   roomCode,
   connected,
   onLeave,
+  onPause,
+  canPause,
 }: {
   roomCode: string;
   connected: boolean;
   onLeave: () => void;
+  /** Host-only pause. Omitted when there's no game running to freeze. */
+  onPause?: () => void;
+  canPause?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -80,9 +85,16 @@ export default function RoomHeader({
           >
             {connected ? "● connected" : "● reconnecting…"}
           </Typography>
-          <Button size="small" onClick={onLeave} sx={{ color: "text.secondary" }}>
-            Leave
-          </Button>
+          <Stack direction="row" spacing={0.5}>
+            {canPause && onPause ? (
+              <Button size="small" onClick={onPause} sx={{ color: "text.secondary" }}>
+                Pause
+              </Button>
+            ) : null}
+            <Button size="small" onClick={onLeave} sx={{ color: "text.secondary" }}>
+              Leave
+            </Button>
+          </Stack>
         </Stack>
       </Stack>
     </Paper>

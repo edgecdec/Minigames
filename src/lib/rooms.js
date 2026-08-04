@@ -100,6 +100,15 @@ function parseCookie(str, name) {
  *   onEvent(ctx, event, payload) -> mutate state; return false to skip broadcast
  *   onPlayerLeave?(ctx, userId)  -> optional cleanup
  *   minPlayers?                  -> guard before the host can start
+ *
+ * Pause hooks. A game only needs these if it runs a timer or derives anything
+ * from wall-clock time:
+ *
+ *   onPause?(ctx)                -> stop timers; bank any elapsed time
+ *   onResume?(ctx)               -> restart timers; re-base any timestamps
+ *
+ * The room layer owns WHEN a game is paused; the game owns what freezing means
+ * for its own state. Codenames needs neither hook — it has no clock.
  */
 const games = new Map();
 
@@ -118,6 +127,14 @@ function createRoom(code, hostId) {
   const room = {
     code,
     hostId,
+    /**
+     * Set while the game is frozen. Holds who paused it and why, so the client
+     * can say "paused by Ana" versus "server restarting".
+     *
+     * Pause is a first-class room concept rather than per-game because the
+     * restart path needs to freeze EVERY room regardless of what it's playing.
+     */
+    paused: null,
     players: new Map(),
     /** null until the host picks one. */
     gameSlug: null,
@@ -142,6 +159,7 @@ function publicState(room) {
     roomCode: room.code,
     hostId: room.hostId,
     game: room.gameSlug,
+    paused: room.paused,
     players,
     gameState:
       handlers && room.state
@@ -172,6 +190,63 @@ function sweepRooms() {
       rooms.delete(code);
     }
   }
+}
+
+/**
+ * Freeze a room's game. Idempotent, so the restart sweep can call it over a
+ * room the host already paused.
+ *
+ * `by` is a userId for a manual pause, or null when the server did it.
+ */
+function pauseRoom(room, { by = null, reason = "host" } = {}, io = null) {
+  if (!room.gameSlug || !room.state) return false;
+  if (room.paused) return false;
+
+  room.paused = { by, reason, at: Date.now() };
+  const handlers = games.get(room.gameSlug);
+  if (handlers && typeof handlers.onPause === "function") {
+    try {
+      handlers.onPause(pauseCtx(room, io));
+    } catch (err) {
+      console.error(`[rooms] ${room.gameSlug} onPause failed:`, err);
+    }
+  }
+  return true;
+}
+
+/** Thaw a room. The game re-bases its own clocks in onResume. */
+function resumeRoom(room, io = null) {
+  if (!room.paused) return false;
+  room.paused = null;
+  const handlers = games.get(room.gameSlug);
+  if (handlers && typeof handlers.onResume === "function") {
+    try {
+      handlers.onResume(pauseCtx(room, io));
+    } catch (err) {
+      console.error(`[rooms] ${room.gameSlug} onResume failed:`, err);
+    }
+  }
+  return true;
+}
+
+/**
+ * A ctx for the pause hooks. Deliberately has no `userId` — pause can be driven
+ * by the server with no socket behind it, so a hook must not assume one.
+ */
+function pauseCtx(room, io) {
+  return {
+    room,
+    state: room.state,
+    setState(next) {
+      room.state = next;
+    },
+    broadcast() {
+      if (io) broadcast(io, room);
+    },
+    emitToPlayer() {
+      // No socket in this path; a hook trying to reply to "the caller" is a bug.
+    },
+  };
 }
 
 /**
@@ -290,6 +365,13 @@ function attach(io, { verifyIdentity }) {
       const { event, data } = payload || {};
       if (typeof event !== "string") return;
 
+      // A paused game accepts nothing. Without this the freeze is cosmetic: in
+      // Double It Duel you could keep answering while no clock was running.
+      if (room.paused) {
+        socket.emit("room_error", { message: "The game is paused" });
+        return;
+      }
+
       try {
         // A game throwing must not kill the connection for everyone else.
         const changed = handlers.onEvent(ctx(room), event, data);
@@ -298,6 +380,28 @@ function attach(io, { verifyIdentity }) {
         console.error(`[rooms] ${room.gameSlug} event "${event}" failed:`, err);
         socket.emit("room_error", { message: "Something went wrong" });
       }
+    });
+
+    /** Host-only. Freezes the game for everyone until they resume it. */
+    socket.on("pause_game", () => {
+      if (!currentCode || !userId) return;
+      const room = rooms.get(currentCode);
+      if (!room) return;
+      if (room.hostId !== userId) {
+        return socket.emit("room_error", { message: "Only the host can pause" });
+      }
+      if (!room.gameSlug || !room.state) return;
+      if (pauseRoom(room, { by: userId, reason: "host" }, io)) broadcast(io, room);
+    });
+
+    socket.on("resume_game", () => {
+      if (!currentCode || !userId) return;
+      const room = rooms.get(currentCode);
+      if (!room) return;
+      if (room.hostId !== userId) {
+        return socket.emit("room_error", { message: "Only the host can resume" });
+      }
+      if (resumeRoom(room, io)) broadcast(io, room);
     });
 
     socket.on("set_name", (payload) => {
@@ -357,6 +461,8 @@ function attach(io, { verifyIdentity }) {
 
 module.exports = {
   attach,
+  pauseRoom,
+  resumeRoom,
   registerGame,
   listGames,
   rooms,

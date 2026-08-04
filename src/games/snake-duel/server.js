@@ -398,6 +398,21 @@ module.exports = {
     }
   },
 
+  /**
+   * Freeze the board. Snake's state is already a plain snapshot of cells and
+   * directions, so stopping the tick is the whole job — there is no elapsed
+   * fraction to bank the way the Double It clock has.
+   */
+  onPause(ctx) {
+    stopTimer(ctx.state);
+  },
+
+  onResume(ctx) {
+    const state = ctx.room.state;
+    if (!state || (state.phase !== "playing" && state.phase !== "countdown")) return;
+    startTimer(ctx);
+  },
+
   /** A duel with a departed player can't continue; award it to whoever remains. */
   onPlayerLeave(ctx, userId) {
     const state = ctx.state;

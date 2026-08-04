@@ -7,6 +7,7 @@ import GamePicker from "@/components/multiplayer/GamePicker";
 import PlayerList from "@/components/multiplayer/PlayerList";
 import RoomHeader from "@/components/multiplayer/RoomHeader";
 import RoomJoin from "@/components/multiplayer/RoomJoin";
+import PauseBanner from "@/components/multiplayer/PauseBanner";
 import CodenamesRoom, { type CodenamesPublicState } from "@/games/codenames/CodenamesRoom";
 import SnakeDuelRoom, { type DuelPublicState } from "@/games/snake-duel/SnakeDuelRoom";
 import DoubleItDuelRoom, { type DuelPublicState as DoubleItDuelState } from "@/games/double-it-duel/DoubleItDuelRoom";
@@ -87,12 +88,25 @@ export default function Lobby() {
         roomCode={state.roomCode}
         connected={room.status === "joined"}
         onLeave={room.leave}
+        onPause={room.pause}
+        // Only offer Pause when there is actually a game to freeze, and only to
+        // the host — the server enforces the same rule.
+        canPause={room.isHost && !!state.game && !!state.gameState && !state.paused}
       />
 
       {room.error ? (
         <Alert severity="warning" onClose={room.clearError} sx={{ width: "100%" }}>
           {room.error}
         </Alert>
+      ) : null}
+
+      {state.paused ? (
+        <PauseBanner
+          paused={state.paused}
+          players={state.players}
+          isHost={room.isHost}
+          onResume={room.resume}
+        />
       ) : null}
 
       {state.game && state.gameState ? (

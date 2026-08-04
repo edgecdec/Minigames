@@ -1,52 +1,36 @@
 /**
- * Double It Duel — multiplayer Double It with a clock that passes around.
+ * Multiplayer Double It! — a passing clock, no DOM, no sockets.
  *
- * Everyone starts with the same clock (default 30s). Only the player on turn is
- * ticking down. Answer correctly and your turn ends; the time you just burned,
- * minus the abyss, is split evenly among everyone else. The abyss vanishes.
+ * One shared prompt moves around the table. Only the ACTIVE player's clock runs.
+ * Answer correctly and the prompt passes on; run your clock to zero and you're
+ * out. Last player standing wins.
  *
- *     opponents gain = (time you took − abyss) / (number of other players)
+ * ---------------------------------------------------------------------------
+ * THE CLOCK, AND WHY THE GAME ENDS
+ * ---------------------------------------------------------------------------
+ * Everyone starts with the same time (30s by default). When you answer, the time
+ * you spent comes off your clock, and `spent - abyss` is split evenly among the
+ * OTHER players. The `abyss` seconds are destroyed.
  *
- * That abyss is what makes the game finite: the total time in play strictly
- * decreases on every turn, so however well everyone plays, clocks trend to zero.
- * A slow answer is doubly punishing — you lose the time AND hand most of it to
- * everyone else.
+ * That destruction is the whole termination argument: total time on the table
+ * strictly decreases by `abyss` every turn, so the pool cannot be sustained
+ * forever no matter how fast everyone answers. Answer in under `abyss` seconds
+ * and the pot is negative — you're taking time OFF the others, which is how a
+ * fast player closes a game out.
  *
- * Clocks may exceed the starting amount. Overflow is deliberate: answering fast
- * while others dawdle should bank a real cushion, and capping it would remove
- * the reward for being quick.
- *
- * Run out of time, or answer wrong, and you're out. Last player standing wins.
- *
- * Pure rules — no DOM, no sockets, no timers. The server owns the wall clock and
- * calls into here; see ./server.js.
+ * Clocks may overflow past the starting amount on purpose: banking time by
+ * answering fast is the reward, and capping it would flatten the strategy.
  */
 
-import { MULTIPLIERS, type Multiplier } from "../double-it/logic";
-
-export { MULTIPLIERS, type Multiplier };
+export const MULTIPLIERS = [2, 3, 4, 5, 6, 7, 8, 9] as const;
+export type Multiplier = (typeof MULTIPLIERS)[number];
 
 export const MIN_NUMBER = 1;
 export const MAX_NUMBER = 10_000;
 
-/** Host-configurable, with the ranges the server clamps to. */
-export interface DuelSettings {
-  multiplier: Multiplier;
-  /** Seconds each player starts with. */
-  startSeconds: number;
-  /**
-   * Seconds swallowed by the abyss on each turn — never passed on to anyone.
-   * Must stay above zero or the game can run forever.
-   */
-  abyssSeconds: number;
-}
-
-export const SETTING_LIMITS = {
-  startSeconds: { min: 5, max: 180, step: 5 },
-  // A floor of 0.25s keeps termination guaranteed while still allowing a long,
-  // grindy game for people who want one.
-  abyssSeconds: { min: 0.25, max: 10, step: 0.25 },
-} as const;
+/** Lobby-configurable, with bounds the server clamps to. */
+export const START_SECONDS_OPTIONS = [10, 20, 30, 45, 60, 90, 120] as const;
+export const ABYSS_SECONDS_OPTIONS = [0.5, 1, 2, 3, 5] as const;
 
 export const DEFAULT_SETTINGS: DuelSettings = {
   multiplier: 2,
@@ -54,293 +38,319 @@ export const DEFAULT_SETTINGS: DuelSettings = {
   abyssSeconds: 1,
 };
 
-/**
- * Backstop on turn count. The abyss guarantees termination mathematically, but
- * with many players all answering in a fraction of a second the drain per turn
- * is tiny, so a game could outlast anyone's patience. Whoever has the most time
- * banked when this trips takes it.
- */
-export const MAX_TURNS = 500;
-
-export type DuelPhase = "lobby" | "playing" | "over";
+export interface DuelSettings {
+  multiplier: Multiplier;
+  /** Starting clock for every player. */
+  startSeconds: number;
+  /** Seconds destroyed per answer — the reason a game terminates. */
+  abyssSeconds: number;
+}
 
 export interface DuelPlayer {
   userId: string;
-  /** Seconds remaining. May exceed settings.startSeconds — overflow is allowed. */
-  clock: number;
+  /** Milliseconds remaining. May exceed the start amount. */
+  ms: number;
   alive: boolean;
-  /** Correct answers given. The tiebreaker if the turn cap is reached. */
+  /** Correct answers given. */
   solved: number;
-  eliminatedBy?: "time" | "wrong";
+  /** Where they finished — 1 is the winner. Set as players are eliminated. */
+  place: number | null;
 }
+
+export type DuelPhase = "lobby" | "playing" | "over";
 
 export interface DuelState {
   phase: DuelPhase;
   settings: DuelSettings;
   players: DuelPlayer[];
-  /** Index into `players` of whoever is on turn. */
+  /** Index into `players` of whoever must answer now. */
   turnIndex: number;
-  /** The number to multiply, for the current turn. */
   prompt: number;
-  /** Turns completed, against MAX_TURNS. */
-  turns: number;
+  /** Server timestamp the current turn began, for computing time spent. */
+  turnStartedAt: number;
+  /** userId of the winner, or null while playing / on a total wipeout. */
   winner: string | null;
-  /** Set for one broadcast after a turn resolves, so clients can narrate it. */
-  lastTurn: {
+  /** Last thing that happened, so clients can narrate it. */
+  lastEvent: {
     userId: string;
-    took: number;
-    gaveEach: number;
-    correct: boolean;
+    kind: "correct" | "wrong" | "timeout";
+    prompt: number;
+    answer?: number;
+    spentMs: number;
+    /** Per-opponent change; negative when the answer was faster than the abyss. */
+    sharedMs: number;
   } | null;
-  /** Wins per player across the session, so a rematch keeps a tally. */
-  wins: Record<string, number>;
+  round: number;
 }
 
 export function randomPrompt(rng: () => number = Math.random): number {
   return MIN_NUMBER + Math.floor(rng() * (MAX_NUMBER - MIN_NUMBER + 1));
 }
 
-export function clampSettings(partial: Partial<DuelSettings>, base = DEFAULT_SETTINGS): DuelSettings {
-  const out: DuelSettings = { ...base };
-
-  if (
-    typeof partial.multiplier === "number" &&
-    (MULTIPLIERS as readonly number[]).includes(partial.multiplier)
-  ) {
-    out.multiplier = partial.multiplier as Multiplier;
-  }
-  if (typeof partial.startSeconds === "number" && Number.isFinite(partial.startSeconds)) {
-    const { min, max } = SETTING_LIMITS.startSeconds;
-    out.startSeconds = Math.min(max, Math.max(min, Math.round(partial.startSeconds)));
-  }
-  if (typeof partial.abyssSeconds === "number" && Number.isFinite(partial.abyssSeconds)) {
-    const { min, max } = SETTING_LIMITS.abyssSeconds;
-    // Quarter-second granularity; the floor is what keeps the game finite.
-    const snapped = Math.round(partial.abyssSeconds * 4) / 4;
-    out.abyssSeconds = Math.min(max, Math.max(min, snapped));
-  }
-  return out;
-}
-
 export function createDuel(
   userIds: string[],
   settings: DuelSettings = DEFAULT_SETTINGS,
+  now = 0,
   rng: () => number = Math.random,
-  wins: Record<string, number> = {},
 ): DuelState {
   return {
-    phase: "lobby",
+    phase: userIds.length >= 2 ? "playing" : "lobby",
     settings,
     players: userIds.map((userId) => ({
       userId,
-      clock: settings.startSeconds,
+      ms: settings.startSeconds * 1000,
       alive: true,
       solved: 0,
+      place: null,
     })),
     turnIndex: 0,
     prompt: randomPrompt(rng),
-    turns: 0,
+    turnStartedAt: now,
     winner: null,
-    lastTurn: null,
-    wins,
+    lastEvent: null,
+    round: 1,
   };
 }
 
-export function start(state: DuelState, rng: () => number = Math.random): DuelState {
-  if (state.phase !== "lobby") return state;
-  if (state.players.filter((p) => p.alive).length < 2) return state;
-  return {
-    ...state,
-    phase: "playing",
-    prompt: randomPrompt(rng),
-    turnIndex: firstAliveFrom(state.players, 0),
-    lastTurn: null,
-  };
-}
-
-export function currentPlayer(state: DuelState): DuelPlayer | null {
-  return state.players[state.turnIndex] ?? null;
+export function activePlayer(state: DuelState): DuelPlayer | undefined {
+  return state.players[state.turnIndex];
 }
 
 export function target(state: DuelState): number {
   return state.prompt * state.settings.multiplier;
 }
 
-function firstAliveFrom(players: DuelPlayer[], from: number): number {
-  for (let i = 0; i < players.length; i++) {
-    const idx = (from + i) % players.length;
-    if (players[idx].alive) return idx;
-  }
-  return 0;
+/** Live clock for a player, accounting for the turn in progress. */
+export function remainingMs(state: DuelState, userId: string, now: number): number {
+  const p = state.players.find((x) => x.userId === userId);
+  if (!p) return 0;
+  if (state.phase !== "playing" || !p.alive) return p.ms;
+  const isActive = state.players[state.turnIndex]?.userId === userId;
+  if (!isActive) return p.ms;
+  return Math.max(0, p.ms - (now - state.turnStartedAt));
 }
 
-/** Next living player after the current one. */
-export function nextTurnIndex(players: DuelPlayer[], current: number): number {
-  return firstAliveFrom(players, (current + 1) % players.length);
+function nextAliveIndex(state: DuelState, from: number): number {
+  const n = state.players.length;
+  for (let step = 1; step <= n; step++) {
+    const idx = (from + step) % n;
+    if (state.players[idx].alive) return idx;
+  }
+  return from;
 }
 
 /**
- * Resolve a turn.
+ * Eliminate a player and, if only one remains, end the game.
  *
- * `elapsed` is measured by the server, never sent by the client — a client that
- * reported its own thinking time could simply claim zero.
+ * Places are assigned from the bottom up as people go out, so the survivor
+ * always lands on 1st.
  */
-export function resolveTurn(
+function eliminate(state: DuelState, index: number): DuelState {
+  const players = state.players.map((p, i) =>
+    i === index ? { ...p, alive: false, ms: 0 } : p,
+  );
+  const aliveCount = players.filter((p) => p.alive).length;
+  // The player just knocked out finishes one place below everyone still in.
+  players[index] = { ...players[index], place: aliveCount + 1 };
+
+  if (aliveCount <= 1) {
+    const survivor = players.find((p) => p.alive);
+    return {
+      ...state,
+      players: survivor
+        ? players.map((p) => (p.userId === survivor.userId ? { ...p, place: 1 } : p))
+        : players,
+      phase: "over",
+      winner: survivor?.userId ?? null,
+    };
+  }
+  return { ...state, players };
+}
+
+/**
+ * Apply the clock transfer for a completed turn.
+ *
+ * `spent` comes off the answerer; `spent - abyss` is divided among the other
+ * LIVING players. A fast answer makes that negative, draining everyone else.
+ */
+function settleClock(state: DuelState, spentMs: number): DuelState {
+  const abyssMs = state.settings.abyssSeconds * 1000;
+  const active = state.players[state.turnIndex];
+  const others = state.players.filter((p) => p.alive && p.userId !== active.userId);
+  const pot = spentMs - abyssMs;
+  const share = others.length > 0 ? pot / others.length : 0;
+
+  return {
+    ...state,
+    players: state.players.map((p) => {
+      if (p.userId === active.userId) {
+        return { ...p, ms: p.ms - spentMs };
+      }
+      if (!p.alive) return p;
+      // Overflow above the starting clock is allowed by design; a floor of 0
+      // stops a fast answer from pushing someone negative without eliminating
+      // them, which the caller checks for separately.
+      return { ...p, ms: Math.max(0, p.ms + share) };
+    }),
+  };
+}
+
+/** Anyone whose clock hit zero from a transfer is out. */
+function reapEmpty(state: DuelState): DuelState {
+  let next = state;
+  for (let i = 0; i < next.players.length; i++) {
+    const p = next.players[i];
+    if (p.alive && p.ms <= 0) {
+      next = eliminate(next, i);
+      if (next.phase === "over") return next;
+    }
+  }
+  return next;
+}
+
+export interface AnswerResult {
+  state: DuelState;
+  correct: boolean;
+}
+
+/**
+ * The active player submits an answer.
+ *
+ * A wrong answer costs the turn's time but does NOT eliminate on its own —
+ * you're only out when your clock empties. That keeps a single slip from ending
+ * someone's game and makes the clock the sole currency.
+ */
+export function answer(
   state: DuelState,
   userId: string,
-  answer: number,
-  elapsed: number,
+  value: number,
+  now: number,
+  rng: () => number = Math.random,
+): AnswerResult {
+  if (state.phase !== "playing") return { state, correct: false };
+  const active = state.players[state.turnIndex];
+  // Ignore anyone answering out of turn.
+  if (!active || active.userId !== userId || !active.alive) {
+    return { state, correct: false };
+  }
+
+  const spentMs = Math.max(0, now - state.turnStartedAt);
+
+  // Ran the clock out mid-thought: settle nothing, just eliminate.
+  if (spentMs >= active.ms) {
+    const timedOut = eliminate(
+      {
+        ...state,
+        lastEvent: {
+          userId,
+          kind: "timeout",
+          prompt: state.prompt,
+          spentMs: active.ms,
+          sharedMs: 0,
+        },
+      },
+      state.turnIndex,
+    );
+    return { state: advance(timedOut, now, rng), correct: false };
+  }
+
+  const correct = value === target(state);
+  const abyssMs = state.settings.abyssSeconds * 1000;
+  const others = state.players.filter(
+    (p) => p.alive && p.userId !== active.userId,
+  ).length;
+
+  let next = settleClock(state, spentMs);
+  next = {
+    ...next,
+    players: next.players.map((p) =>
+      p.userId === userId && correct ? { ...p, solved: p.solved + 1 } : p,
+    ),
+    lastEvent: {
+      userId,
+      kind: correct ? "correct" : "wrong",
+      prompt: state.prompt,
+      answer: value,
+      spentMs,
+      sharedMs: others > 0 ? (spentMs - abyssMs) / others : 0,
+    },
+  };
+
+  // A wrong answer keeps the same prompt with the next player, so the table
+  // inherits a number someone has already failed on.
+  next = reapEmpty(next);
+  if (next.phase === "over") return { state: next, correct };
+  return { state: advance(next, now, rng, correct), correct };
+}
+
+/** Hand the turn to the next living player, optionally with a fresh prompt. */
+function advance(
+  state: DuelState,
+  now: number,
+  rng: () => number,
+  newPrompt = true,
+): DuelState {
+  if (state.phase === "over") return state;
+  const turnIndex = nextAliveIndex(state, state.turnIndex);
+  return {
+    ...state,
+    turnIndex,
+    prompt: newPrompt ? randomPrompt(rng) : state.prompt,
+    turnStartedAt: now,
+    round: state.round + 1,
+  };
+}
+
+/**
+ * The active player's clock reached zero without an answer. Called by the
+ * server's tick, since nobody will submit anything.
+ */
+export function expireTurn(
+  state: DuelState,
+  now: number,
   rng: () => number = Math.random,
 ): DuelState {
   if (state.phase !== "playing") return state;
-  const actor = currentPlayer(state);
-  // Ignore anyone answering out of turn; only the player on clock may act.
-  if (!actor || actor.userId !== userId || !actor.alive) return state;
+  const active = state.players[state.turnIndex];
+  if (!active || !active.alive) return state;
+  if (now - state.turnStartedAt < active.ms) return state;
 
-  const took = Math.max(0, elapsed);
-  const correct = answer === target(state);
-
-  // The clock keeps running while you think, so it always costs you the time.
-  let players = state.players.map((p) =>
-    p.userId === userId ? { ...p, clock: p.clock - took } : p,
-  );
-
-  const me = players.find((p) => p.userId === userId)!;
-  const ranOut = me.clock <= 0;
-
-  if (!correct || ranOut) {
-    players = players.map((p) =>
-      p.userId === userId
-        ? {
-            ...p,
-            alive: false,
-            clock: Math.max(0, p.clock),
-            eliminatedBy: ranOut ? "time" : "wrong",
-          }
-        : p,
-    );
-    return finish(
-      {
-        ...state,
-        players,
-        turns: state.turns + 1,
-        lastTurn: { userId, took, gaveEach: 0, correct },
+  const out = eliminate(
+    {
+      ...state,
+      lastEvent: {
+        userId: active.userId,
+        kind: "timeout",
+        prompt: state.prompt,
+        spentMs: active.ms,
+        sharedMs: 0,
       },
-      rng,
-    );
-  }
-
-  // Correct: hand out (took − abyss), split among the other living players.
-  const others = players.filter((p) => p.alive && p.userId !== userId);
-  const pot = Math.max(0, took - state.settings.abyssSeconds);
-  const gaveEach = others.length > 0 ? pot / others.length : 0;
-
-  players = players.map((p) => {
-    if (p.userId === userId) return { ...p, solved: p.solved + 1 };
-    if (!p.alive) return p;
-    // No cap — overflowing past startSeconds is the reward for being fast.
-    return { ...p, clock: p.clock + gaveEach };
-  });
-
-  return finish(
-    {
-      ...state,
-      players,
-      turns: state.turns + 1,
-      prompt: randomPrompt(rng),
-      turnIndex: nextTurnIndex(players, state.turnIndex),
-      lastTurn: { userId, took, gaveEach, correct: true },
     },
-    rng,
+    state.turnIndex,
   );
+  return advance(out, now, rng);
 }
 
-/**
- * Clock ran out with no answer. Separate from resolveTurn because there is no
- * answer to judge and nothing to pass on — the whole remaining clock is spent.
- */
-export function timeOut(state: DuelState, userId: string, rng: () => number = Math.random): DuelState {
-  if (state.phase !== "playing") return state;
-  const actor = currentPlayer(state);
-  if (!actor || actor.userId !== userId) return state;
-
-  const players = state.players.map((p) =>
-    p.userId === userId ? { ...p, clock: 0, alive: false, eliminatedBy: "time" as const } : p,
-  );
-  return finish(
-    {
-      ...state,
-      players,
-      turns: state.turns + 1,
-      lastTurn: { userId, took: actor.clock, gaveEach: 0, correct: false },
-    },
-    rng,
-  );
+/** Total live time on the table — strictly decreasing, which is the point. */
+export function totalMs(state: DuelState): number {
+  return state.players.filter((p) => p.alive).reduce((sum, p) => sum + p.ms, 0);
 }
 
-/** A player leaving mid-game forfeits rather than stalling everyone else. */
-export function forfeit(state: DuelState, userId: string, rng: () => number = Math.random): DuelState {
-  if (state.phase !== "playing") return state;
-  const target = state.players.find((p) => p.userId === userId);
-  if (!target || !target.alive) return state;
-
-  const wasTheirTurn = currentPlayer(state)?.userId === userId;
-  const players = state.players.map((p) =>
-    p.userId === userId ? { ...p, alive: false, clock: 0, eliminatedBy: "time" as const } : p,
-  );
-  const next = {
-    ...state,
-    players,
-    // Only advance the turn if we just removed whoever was holding it.
-    turnIndex: wasTheirTurn ? nextTurnIndex(players, state.turnIndex) : state.turnIndex,
-    prompt: wasTheirTurn ? randomPrompt(rng) : state.prompt,
-  };
-  return finish(next, rng);
-}
-
-/** Decide whether the duel is over, and settle the turn index if not. */
-function finish(state: DuelState, rng: () => number): DuelState {
-  const alive = state.players.filter((p) => p.alive);
-
-  if (alive.length === 1) {
-    return {
-      ...state,
-      phase: "over",
-      winner: alive[0].userId,
-      wins: bumpWins(state.wins, alive[0].userId),
-    };
-  }
-  if (alive.length === 0) {
-    // Everyone out on the same turn — nobody takes it.
-    return { ...state, phase: "over", winner: null };
-  }
-
-  if (state.turns >= MAX_TURNS) {
-    // Most time banked wins; ties on clock fall to most solved, then a draw.
-    const best = Math.max(...alive.map((p) => p.clock));
-    let leaders = alive.filter((p) => p.clock === best);
-    if (leaders.length > 1) {
-      const bestSolved = Math.max(...leaders.map((p) => p.solved));
-      leaders = leaders.filter((p) => p.solved === bestSolved);
-    }
-    const winner = leaders.length === 1 ? leaders[0].userId : null;
-    return { ...state, phase: "over", winner, wins: bumpWins(state.wins, winner) };
-  }
-
-  // Make sure the turn hasn't landed on someone who just went out.
-  const holder = state.players[state.turnIndex];
-  if (!holder || !holder.alive) {
-    return { ...state, turnIndex: nextTurnIndex(state.players, state.turnIndex), prompt: randomPrompt(rng) };
-  }
-  return state;
-}
-
-function bumpWins(wins: Record<string, number>, winner: string | null): Record<string, number> {
-  if (!winner) return wins;
-  return { ...wins, [winner]: (wins[winner] ?? 0) + 1 };
-}
-
-/** Total time still in play — strictly decreasing, which is why this ends. */
-export function timeInPlay(state: DuelState): number {
-  return state.players.reduce((sum, p) => sum + (p.alive ? Math.max(0, p.clock) : 0), 0);
+/** Validate and clamp settings arriving from a client. */
+export function cleanSettings(raw: unknown): DuelSettings {
+  const s = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  const multiplier = MULTIPLIERS.includes(s.multiplier as Multiplier)
+    ? (s.multiplier as Multiplier)
+    : DEFAULT_SETTINGS.multiplier;
+  const startSeconds = (START_SECONDS_OPTIONS as readonly number[]).includes(
+    s.startSeconds as number,
+  )
+    ? (s.startSeconds as number)
+    : DEFAULT_SETTINGS.startSeconds;
+  const abyssSeconds = (ABYSS_SECONDS_OPTIONS as readonly number[]).includes(
+    s.abyssSeconds as number,
+  )
+    ? (s.abyssSeconds as number)
+    : DEFAULT_SETTINGS.abyssSeconds;
+  return { multiplier, startSeconds, abyssSeconds };
 }

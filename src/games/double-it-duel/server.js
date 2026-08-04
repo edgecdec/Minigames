@@ -1,52 +1,40 @@
 /**
- * Double It Duel room handlers.
+ * Multiplayer Double It! room handlers — the passing clock.
  *
- * THE SERVER OWNS THE CLOCK. Elapsed time is measured here from a turn-start
- * timestamp; the client never reports how long it thought. A client that did
- * could claim every answer took zero seconds, which would break the whole
- * economy — nobody would ever lose time and the game could not end.
+ * Server-authoritative: the server owns the clock, deals every prompt, and
+ * decides who ran out. A client that timed its own turn could simply claim it
+ * answered instantly, which is the entire currency of this game.
  *
  * CommonJS, loaded by server.js outside the webpack build, so the rules are
  * duplicated from logic.ts. That file is the source of truth and has the tests —
  * change one, change both.
  */
 
-const MIN_NUMBER = 1;
-const MAX_NUMBER = 10_000;
 const MULTIPLIERS = [2, 3, 4, 5, 6, 7, 8, 9];
-
-const LIMITS = {
-  startSeconds: { min: 5, max: 180 },
-  // Never zero: the abyss is what guarantees the game ends.
-  abyssSeconds: { min: 0.25, max: 10 },
-};
+const START_SECONDS_OPTIONS = [10, 20, 30, 45, 60, 90, 120];
+const ABYSS_SECONDS_OPTIONS = [0.5, 1, 2, 3, 5];
+const MIN_NUMBER = 1;
+const MAX_NUMBER = 10000;
+/** How often the clock is broadcast while a turn runs. */
+const TICK_MS = 200;
 
 const DEFAULT_SETTINGS = { multiplier: 2, startSeconds: 30, abyssSeconds: 1 };
-const MAX_TURNS = 500;
-/** How often clients get a fresh clock reading while someone is thinking. */
-const TICK_MS = 100;
+
+function cleanSettings(raw) {
+  const s = raw && typeof raw === "object" ? raw : {};
+  return {
+    multiplier: MULTIPLIERS.includes(s.multiplier) ? s.multiplier : DEFAULT_SETTINGS.multiplier,
+    startSeconds: START_SECONDS_OPTIONS.includes(s.startSeconds)
+      ? s.startSeconds
+      : DEFAULT_SETTINGS.startSeconds,
+    abyssSeconds: ABYSS_SECONDS_OPTIONS.includes(s.abyssSeconds)
+      ? s.abyssSeconds
+      : DEFAULT_SETTINGS.abyssSeconds,
+  };
+}
 
 function randomPrompt() {
   return MIN_NUMBER + Math.floor(Math.random() * (MAX_NUMBER - MIN_NUMBER + 1));
-}
-
-function clampSettings(partial, base) {
-  const out = Object.assign({}, base || DEFAULT_SETTINGS);
-  if (!partial || typeof partial !== "object") return out;
-
-  if (typeof partial.multiplier === "number" && MULTIPLIERS.includes(partial.multiplier)) {
-    out.multiplier = partial.multiplier;
-  }
-  if (typeof partial.startSeconds === "number" && Number.isFinite(partial.startSeconds)) {
-    const l = LIMITS.startSeconds;
-    out.startSeconds = Math.min(l.max, Math.max(l.min, Math.round(partial.startSeconds)));
-  }
-  if (typeof partial.abyssSeconds === "number" && Number.isFinite(partial.abyssSeconds)) {
-    const l = LIMITS.abyssSeconds;
-    const snapped = Math.round(partial.abyssSeconds * 4) / 4;
-    out.abyssSeconds = Math.min(l.max, Math.max(l.min, snapped));
-  }
-  return out;
 }
 
 function connectedIds(room) {
@@ -55,100 +43,101 @@ function connectedIds(room) {
     .map((p) => p.id);
 }
 
-function freshState(room, settings) {
-  const s = clampSettings(settings || {}, DEFAULT_SETTINGS);
+function freshState(settings) {
   return {
     phase: "lobby",
-    settings: s,
-    players: connectedIds(room).map((userId) => ({
-      userId,
-      clock: s.startSeconds,
-      alive: true,
-      solved: 0,
-      eliminatedBy: null,
-    })),
+    settings: settings || Object.assign({}, DEFAULT_SETTINGS),
+    players: [],
     turnIndex: 0,
     prompt: randomPrompt(),
-    turns: 0,
+    turnStartedAt: 0,
     winner: null,
-    lastTurn: null,
-    wins: {},
-    /** Wall-clock ms when the current turn began. Server-side only. */
-    turnStartedAt: null,
+    lastEvent: null,
+    round: 1,
     /** Interval handle. Never serialised to a client. */
     timer: null,
   };
 }
 
-function firstAliveFrom(players, from) {
-  for (let i = 0; i < players.length; i++) {
-    const idx = (from + i) % players.length;
-    if (players[idx] && players[idx].alive) return idx;
+function startDuel(state, userIds) {
+  const s = state.settings;
+  return Object.assign({}, state, {
+    phase: "playing",
+    players: userIds.map((userId) => ({
+      userId,
+      ms: s.startSeconds * 1000,
+      alive: true,
+      solved: 0,
+      place: null,
+    })),
+    turnIndex: 0,
+    prompt: randomPrompt(),
+    turnStartedAt: Date.now(),
+    winner: null,
+    lastEvent: null,
+    round: 1,
+  });
+}
+
+function target(state) {
+  return state.prompt * state.settings.multiplier;
+}
+
+function nextAliveIndex(state, from) {
+  const n = state.players.length;
+  for (let step = 1; step <= n; step++) {
+    const idx = (from + step) % n;
+    if (state.players[idx].alive) return idx;
   }
-  return 0;
+  return from;
 }
 
-function nextTurnIndex(players, current) {
-  return firstAliveFrom(players, (current + 1) % players.length);
-}
-
-function bumpWins(wins, winner) {
-  if (!winner) return wins;
-  const next = Object.assign({}, wins);
-  next[winner] = (next[winner] || 0) + 1;
-  return next;
-}
-
-/** Seconds the current player has burned so far this turn. */
-function elapsedSeconds(state) {
-  if (!state.turnStartedAt) return 0;
-  return (Date.now() - state.turnStartedAt) / 1000;
-}
-
-/** Clock the current player has left right now, accounting for the live turn. */
-function liveClock(state, player) {
-  const cur = state.players[state.turnIndex];
-  if (state.phase !== "playing" || !cur || cur.userId !== player.userId) return player.clock;
-  return player.clock - elapsedSeconds(state);
-}
-
-function settle(state) {
-  const alive = state.players.filter((p) => p.alive);
-
-  if (alive.length === 1) {
+/** Mutates in place: eliminate, assign a place, and end the game if one remains. */
+function eliminate(state, index) {
+  const p = state.players[index];
+  if (!p || !p.alive) return;
+  p.alive = false;
+  p.ms = 0;
+  const aliveCount = state.players.filter((x) => x.alive).length;
+  p.place = aliveCount + 1;
+  if (aliveCount <= 1) {
+    const survivor = state.players.find((x) => x.alive);
+    if (survivor) survivor.place = 1;
     state.phase = "over";
-    state.winner = alive[0].userId;
-    state.wins = bumpWins(state.wins, state.winner);
-    return state;
+    state.winner = survivor ? survivor.userId : null;
   }
-  if (alive.length === 0) {
-    state.phase = "over";
-    state.winner = null;
-    return state;
-  }
-  if (state.turns >= MAX_TURNS) {
-    const best = Math.max.apply(null, alive.map((p) => p.clock));
-    let leaders = alive.filter((p) => p.clock === best);
-    if (leaders.length > 1) {
-      const bestSolved = Math.max.apply(null, leaders.map((p) => p.solved));
-      leaders = leaders.filter((p) => p.solved === bestSolved);
+}
+
+/** spent comes off the answerer; spent - abyss splits among the living others. */
+function settleClock(state, spentMs) {
+  const abyssMs = state.settings.abyssSeconds * 1000;
+  const active = state.players[state.turnIndex];
+  const others = state.players.filter((p) => p.alive && p.userId !== active.userId);
+  const share = others.length > 0 ? (spentMs - abyssMs) / others.length : 0;
+  active.ms -= spentMs;
+  others.forEach((p) => {
+    // Overflow above the starting clock is intentional; the floor stops a fast
+    // answer pushing someone negative before reapEmpty sees them.
+    p.ms = Math.max(0, p.ms + share);
+  });
+}
+
+function reapEmpty(state) {
+  for (let i = 0; i < state.players.length; i++) {
+    const p = state.players[i];
+    if (p.alive && p.ms <= 0) {
+      eliminate(state, i);
+      if (state.phase === "over") return;
     }
-    state.phase = "over";
-    state.winner = leaders.length === 1 ? leaders[0].userId : null;
-    state.wins = bumpWins(state.wins, state.winner);
-    return state;
   }
-
-  const holder = state.players[state.turnIndex];
-  if (!holder || !holder.alive) {
-    state.turnIndex = nextTurnIndex(state.players, state.turnIndex);
-    state.prompt = randomPrompt();
-  }
-  return state;
 }
 
-function beginTurn(state) {
+function advance(state, newPrompt) {
+  if (state.phase === "over") return;
+  state.turnIndex = nextAliveIndex(state, state.turnIndex);
+  if (newPrompt) state.prompt = randomPrompt();
   state.turnStartedAt = Date.now();
+  state.round += 1;
 }
 
 function stopTimer(state) {
@@ -159,33 +148,32 @@ function stopTimer(state) {
 }
 
 /**
- * Broadcast a live clock while someone thinks, and enforce the timeout.
- *
- * Reads ctx.room.state each tick rather than closing over the state object: a
- * rematch replaces it, and a stale closure would keep ticking the old game.
+ * Broadcast the clock while a turn runs, and enforce a timeout when the active
+ * player simply stops playing — nobody else will submit anything on their behalf.
  */
 function startTimer(ctx) {
   const state = ctx.room.state;
   stopTimer(state);
   state.timer = setInterval(() => {
+    // Re-read: a rematch replaces the state object and a stale closure would
+    // keep driving the previous duel.
     const live = ctx.room.state;
     if (!live || live.phase !== "playing") {
       stopTimer(live);
       return;
     }
-    const cur = live.players[live.turnIndex];
-    if (cur && cur.alive && liveClock(live, cur) <= 0) {
-      // Out of time: spend the whole clock, eliminate, move on.
-      cur.clock = 0;
-      cur.alive = false;
-      cur.eliminatedBy = "time";
-      live.turns += 1;
-      live.lastTurn = { userId: cur.userId, took: null, gaveEach: 0, correct: false };
-      live.turnIndex = nextTurnIndex(live.players, live.turnIndex);
-      live.prompt = randomPrompt();
-      settle(live);
+    const active = live.players[live.turnIndex];
+    if (active && active.alive && Date.now() - live.turnStartedAt >= active.ms) {
+      live.lastEvent = {
+        userId: active.userId,
+        kind: "timeout",
+        prompt: live.prompt,
+        spentMs: active.ms,
+        sharedMs: 0,
+      };
+      eliminate(live, live.turnIndex);
+      advance(live, true);
       if (live.phase === "over") stopTimer(live);
-      else beginTurn(live);
     }
     ctx.broadcast();
   }, TICK_MS);
@@ -196,35 +184,56 @@ module.exports = {
   slug: "double-it-duel",
   minPlayers: 2,
 
-  createState(room) {
-    return freshState(room, DEFAULT_SETTINGS);
+  createState() {
+    return freshState();
   },
 
+  /** The timer handle must never reach a client. */
   publicState(room, state) {
+    const now = Date.now();
+    const active = state.players[state.turnIndex];
+    // In the lobby there are no seated players yet, but the clock rows are the
+    // clearest way to show what a setting means — so preview everyone in the room
+    // at the configured starting time.
+    const seats =
+      state.phase === "lobby"
+        ? connectedIds(room).map((userId) => ({
+            userId,
+            ms: state.settings.startSeconds * 1000,
+            alive: true,
+            solved: 0,
+            place: null,
+          }))
+        : null;
     return {
       phase: state.phase,
       settings: state.settings,
-      players: state.players.map((p) => ({
+      players: (seats || state.players).map((p) => ({
         userId: p.userId,
-        // Send the live figure so a watching client sees the clock move without
-        // having to run its own copy of the rules.
-        clock: Math.max(0, liveClock(state, p)),
+        // Send the LIVE clock so a client needs no local timing model: only the
+        // player on turn is burning time.
+        ms: Math.max(
+          0,
+          state.phase === "playing" && p.alive && active && p.userId === active.userId
+            ? p.ms - (now - state.turnStartedAt)
+            : p.ms,
+        ),
         alive: p.alive,
         solved: p.solved,
-        eliminatedBy: p.eliminatedBy || null,
+        place: p.place,
       })),
-      turnIndex: state.turnIndex,
-      currentUserId: state.players[state.turnIndex]
-        ? state.players[state.turnIndex].userId
-        : null,
+      turnUserId: active ? active.userId : null,
       prompt: state.prompt,
-      turns: state.turns,
-      maxTurns: MAX_TURNS,
+      round: state.round,
       winner: state.winner,
-      lastTurn: state.lastTurn,
-      wins: state.wins,
-      limits: LIMITS,
-      multipliers: MULTIPLIERS,
+      lastEvent: state.lastEvent,
+      // Options travel with the state so the lobby UI can't drift from the
+      // server's idea of what's allowed.
+      options: {
+        multipliers: MULTIPLIERS,
+        startSeconds: START_SECONDS_OPTIONS,
+        abyssSeconds: ABYSS_SECONDS_OPTIONS,
+      },
     };
   },
 
@@ -232,14 +241,15 @@ module.exports = {
     const state = ctx.state;
 
     switch (event) {
-      /** Host-only, lobby-only: mirrors how TopTenGame gates its settings. */
       case "settings": {
-        if (!ctx.isHost || state.phase !== "lobby") return false;
-        state.settings = clampSettings(data, state.settings);
-        // Re-seed the clocks so the lobby shows what you'll actually start with.
-        state.players.forEach((p) => {
-          p.clock = state.settings.startSeconds;
-        });
+        if (!ctx.isHost) return false;
+        // Locked once play starts: changing the multiplier mid-duel would
+        // silently move the goalposts for whoever is on turn.
+        if (state.phase === "playing") {
+          ctx.emitToPlayer("room_error", { message: "Can't change settings mid-game" });
+          return false;
+        }
+        state.settings = cleanSettings(Object.assign({}, state.settings, data || {}));
         return true;
       }
 
@@ -252,65 +262,62 @@ module.exports = {
           return false;
         }
         stopTimer(state);
-        const next = freshState(ctx.room, state.settings);
-        next.wins = state.wins;
-        next.phase = "playing";
-        next.turnIndex = firstAliveFrom(next.players, 0);
-        ctx.setState(next);
-        beginTurn(ctx.room.state);
+        ctx.setState(startDuel(state, ids));
         startTimer(ctx);
         return true;
       }
 
       case "answer": {
         if (state.phase !== "playing") return false;
-        const cur = state.players[state.turnIndex];
-        // Only the player holding the clock may answer.
-        if (!cur || cur.userId !== ctx.userId || !cur.alive) return false;
+        const active = state.players[state.turnIndex];
+        if (!active || active.userId !== ctx.userId || !active.alive) return false;
 
-        const raw = data && data.answer;
-        const answer = typeof raw === "number" ? raw : Number(raw);
-        if (!Number.isFinite(answer)) return false;
+        const value = Number(data && data.value);
+        if (!Number.isFinite(value)) return false;
 
-        // Measured here, not trusted from the client.
-        const took = elapsedSeconds(state);
-        cur.clock -= took;
+        const now = Date.now();
+        const spentMs = Math.max(0, now - state.turnStartedAt);
 
-        const correct = answer === state.prompt * state.settings.multiplier;
-        const ranOut = cur.clock <= 0;
-
-        if (!correct || ranOut) {
-          cur.clock = Math.max(0, cur.clock);
-          cur.alive = false;
-          cur.eliminatedBy = ranOut ? "time" : "wrong";
-          state.turns += 1;
-          state.lastTurn = { userId: ctx.userId, took, gaveEach: 0, correct: correct };
-          state.turnIndex = nextTurnIndex(state.players, state.turnIndex);
-          state.prompt = randomPrompt();
-          settle(state);
+        // Clock ran out mid-thought: no transfer, just elimination.
+        if (spentMs >= active.ms) {
+          state.lastEvent = {
+            userId: ctx.userId,
+            kind: "timeout",
+            prompt: state.prompt,
+            spentMs: active.ms,
+            sharedMs: 0,
+          };
+          eliminate(state, state.turnIndex);
+          advance(state, true);
           if (state.phase === "over") stopTimer(state);
-          else beginTurn(state);
           return true;
         }
 
-        // Correct: (took − abyss) split among the other living players. The
-        // abyss is simply lost, which is what makes the pool shrink.
-        const others = state.players.filter((p) => p.alive && p.userId !== ctx.userId);
-        const pot = Math.max(0, took - state.settings.abyssSeconds);
-        const gaveEach = others.length > 0 ? pot / others.length : 0;
-        // No cap: overflowing past startSeconds is the reward for being fast.
-        others.forEach((p) => {
-          p.clock += gaveEach;
-        });
+        const correct = value === target(state);
+        const abyssMs = state.settings.abyssSeconds * 1000;
+        const others = state.players.filter(
+          (p) => p.alive && p.userId !== active.userId,
+        ).length;
 
-        cur.solved += 1;
-        state.turns += 1;
-        state.lastTurn = { userId: ctx.userId, took, gaveEach, correct: true };
-        state.turnIndex = nextTurnIndex(state.players, state.turnIndex);
-        state.prompt = randomPrompt();
-        settle(state);
-        if (state.phase === "over") stopTimer(state);
-        else beginTurn(state);
+        settleClock(state, spentMs);
+        if (correct) active.solved += 1;
+        state.lastEvent = {
+          userId: ctx.userId,
+          kind: correct ? "correct" : "wrong",
+          prompt: state.prompt,
+          answer: value,
+          spentMs,
+          sharedMs: others > 0 ? (spentMs - abyssMs) / others : 0,
+        };
+
+        reapEmpty(state);
+        if (state.phase === "over") {
+          stopTimer(state);
+          return true;
+        }
+        // A wrong answer passes the SAME number on, so the next player inherits
+        // a prompt someone already failed.
+        advance(state, correct);
         return true;
       }
 
@@ -322,9 +329,8 @@ module.exports = {
           return false;
         }
         stopTimer(state);
-        const next = freshState(ctx.room, state.settings);
-        next.wins = state.wins;
-        ctx.setState(next);
+        ctx.setState(startDuel(state, ids));
+        startTimer(ctx);
         return true;
       }
 
@@ -333,33 +339,19 @@ module.exports = {
     }
   },
 
-  /** Leaving forfeits — otherwise everyone waits on a clock nobody is watching. */
+  /** A player leaving must not stall the table on a turn nobody can take. */
   onPlayerLeave(ctx, userId) {
     const state = ctx.state;
-    if (!state) return;
+    if (!state || state.phase !== "playing") return;
+    const idx = state.players.findIndex((p) => p.userId === userId);
+    if (idx < 0 || !state.players[idx].alive) return;
 
-    if (state.phase === "lobby") {
-      state.players = state.players.filter((p) => p.userId !== userId);
+    const wasTheirTurn = state.turnIndex === idx;
+    eliminate(state, idx);
+    if (state.phase === "over") {
+      stopTimer(state);
       return;
     }
-    if (state.phase !== "playing") return;
-
-    const player = state.players.find((p) => p.userId === userId);
-    if (!player || !player.alive) return;
-
-    const wasTheirTurn =
-      state.players[state.turnIndex] && state.players[state.turnIndex].userId === userId;
-
-    player.alive = false;
-    player.clock = 0;
-    player.eliminatedBy = "time";
-
-    if (wasTheirTurn) {
-      state.turnIndex = nextTurnIndex(state.players, state.turnIndex);
-      state.prompt = randomPrompt();
-    }
-    settle(state);
-    if (state.phase === "over") stopTimer(state);
-    else if (wasTheirTurn) beginTurn(state);
+    if (wasTheirTurn) advance(state, true);
   },
 };

@@ -66,6 +66,19 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
       "the multiplier, the starting clock, and the abyss.",
     status: "live",
   },
+  {
+    slug: "double-it-duel",
+    title: "Double It! Duel",
+    blurb: "One clock each. Answer fast to bank time and drain everyone else.",
+    icon: "⏱️",
+    minPlayers: 2,
+    howToPlay:
+      "Everyone starts with the same clock, but only the person on turn burns time. " +
+      "Answer and the time you took comes off your clock and is handed to the others — " +
+      "minus a slice that vanishes for good, which is why a game always ends. Beat that " +
+      "slice and you drain them instead. Run out and you're eliminated; last one left wins.",
+    status: "live",
+  },
 ];
 
 export function getMultiplayerGame(slug: string): MultiplayerGameMeta | undefined {

@@ -17,14 +17,17 @@ export default function RoomJoin({
   connecting,
   error,
   initialName = "",
+  initialCode = "",
 }: {
   onJoin: (roomCode: string, name: string) => void;
   connecting?: boolean;
   error?: string | null;
   initialName?: string;
+  /** Prefilled from a shared link, for a visitor who hasn't set a name yet. */
+  initialCode?: string;
 }) {
   const [name, setName] = useState(initialName);
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(initialCode);
 
   const nameOk = name.trim().length > 0;
   const codeOk = code.length === CODE_LENGTH;

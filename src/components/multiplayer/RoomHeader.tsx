@@ -5,6 +5,8 @@ import Button from "@mui/material/Button";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
+import ShareIcon from "@mui/icons-material/Share";
+import LinkIcon from "@mui/icons-material/Link";
 import Typography from "@mui/material/Typography";
 
 /** Room code with copy-to-clipboard, plus leave. Shared by all lobbies. */
@@ -22,17 +24,59 @@ export default function RoomHeader({
   onPause?: () => void;
   canPause?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
-  async function copy() {
+  function flash(message: string) {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 1800);
+  }
+
+  /**
+   * A link that lands straight in this room. Read from window at click time
+   * rather than render time so it can't be baked wrong during SSR.
+   */
+  function joinUrl(): string {
+    return `${window.location.origin}/multiplayer?room=${roomCode}`;
+  }
+
+  async function copyCode() {
     try {
       await navigator.clipboard.writeText(roomCode);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      flash("Room code copied");
     } catch {
-      // Clipboard is blocked without HTTPS or permission — the code is on
-      // screen anyway, so this is cosmetic.
+      // Clipboard needs HTTPS and permission; the code is on screen regardless.
+      flash("Couldn't copy — the code is above");
     }
+  }
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(joinUrl());
+      flash("Invite link copied");
+    } catch {
+      flash("Couldn't copy the link");
+    }
+  }
+
+  /**
+   * Native share sheet where it exists (phones, mostly), clipboard elsewhere.
+   * A cancelled share throws AbortError, which is not an error worth reporting.
+   */
+  async function share() {
+    const url = joinUrl();
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({
+          title: "Minigames",
+          text: `Join my game — room ${roomCode}`,
+          url,
+        });
+        return;
+      } catch {
+        // Cancelled, or the sheet failed; fall through to the clipboard.
+      }
+    }
+    await copyLink();
   }
 
   return (
@@ -60,9 +104,9 @@ export default function RoomHeader({
           >
             Room code
           </Typography>
-          <Tooltip title={copied ? "Copied" : "Click to copy"} placement="right">
+          <Tooltip title="Click to copy the code" placement="right">
             <Typography
-              onClick={copy}
+              onClick={copyCode}
               sx={{
                 fontWeight: 900,
                 fontSize: "1.75rem",
@@ -76,6 +120,24 @@ export default function RoomHeader({
               {roomCode}
             </Typography>
           </Tooltip>
+          <Stack direction="row" spacing={0.5} sx={{ mt: 0.5 }}>
+            <Button
+              size="small"
+              startIcon={<ShareIcon fontSize="small" />}
+              onClick={share}
+              sx={{ color: "primary.main" }}
+            >
+              Share
+            </Button>
+            <Button
+              size="small"
+              startIcon={<LinkIcon fontSize="small" />}
+              onClick={copyLink}
+              sx={{ color: "text.secondary" }}
+            >
+              Copy link
+            </Button>
+          </Stack>
         </Stack>
 
         <Stack spacing={1} alignItems="flex-end">
@@ -97,6 +159,15 @@ export default function RoomHeader({
           </Stack>
         </Stack>
       </Stack>
+
+      {toast ? (
+        <Typography
+          variant="caption"
+          sx={{ display: "block", mt: 1, color: "success.main", fontWeight: 700 }}
+        >
+          {toast}
+        </Typography>
+      ) : null}
     </Paper>
   );
 }

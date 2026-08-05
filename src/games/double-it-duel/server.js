@@ -13,12 +13,19 @@
 const MULTIPLIERS = [2, 3, 4, 5, 6, 7, 8, 9];
 const START_SECONDS_OPTIONS = [10, 20, 30, 45, 60, 90, 120];
 const ABYSS_SECONDS_OPTIONS = [0.5, 1, 2, 3, 5];
+/** Clock cost of a wrong answer. 0 keeps the old "free guess" behaviour. */
+const WRONG_PENALTY_OPTIONS = [0, 1, 2, 3, 5];
 const MIN_NUMBER = 1;
 const MAX_NUMBER = 10000;
 /** How often the clock is broadcast while a turn runs. */
 const TICK_MS = 200;
 
-const DEFAULT_SETTINGS = { multiplier: 2, startSeconds: 30, abyssSeconds: 1 };
+const DEFAULT_SETTINGS = {
+  multiplier: 2,
+  startSeconds: 30,
+  abyssSeconds: 1,
+  wrongPenaltySeconds: 2,
+};
 
 function cleanSettings(raw) {
   const s = raw && typeof raw === "object" ? raw : {};
@@ -30,6 +37,9 @@ function cleanSettings(raw) {
     abyssSeconds: ABYSS_SECONDS_OPTIONS.includes(s.abyssSeconds)
       ? s.abyssSeconds
       : DEFAULT_SETTINGS.abyssSeconds,
+    wrongPenaltySeconds: WRONG_PENALTY_OPTIONS.includes(s.wrongPenaltySeconds)
+      ? s.wrongPenaltySeconds
+      : DEFAULT_SETTINGS.wrongPenaltySeconds,
   };
 }
 
@@ -51,6 +61,13 @@ function freshState(settings) {
     turnIndex: 0,
     prompt: randomPrompt(),
     turnStartedAt: 0,
+    /** Misses on the current number, reset when it is finally solved. */
+    wrongThisTurn: 0,
+    /**
+     * Distinct players who have finished a turn. Until everyone has had one,
+     * clocks cannot exceed the starting amount — see settleClock.
+     */
+    turnsTaken: 0,
     winner: null,
     lastEvent: null,
     round: 1,
@@ -114,11 +131,23 @@ function settleClock(state, spentMs) {
   const active = state.players[state.turnIndex];
   const others = state.players.filter((p) => p.alive && p.userId !== active.userId);
   const share = others.length > 0 ? (spentMs - abyssMs) / others.length : 0;
+
+  // NO OVERFLOW DURING THE FIRST ROTATION.
+  //
+  // In round one the later seats collect time from earlier players before
+  // spending any of their own, so an uncapped first lap hands the last player a
+  // surplus purely for sitting later in the order. The cap lifts once everyone
+  // has taken a turn. Mirrors logic.ts.
+  const firstRotationDone = (state.turnsTaken || 0) + 1 >= state.players.length;
+  const startMs = state.settings.startSeconds * 1000;
+
   active.ms -= spentMs;
   others.forEach((p) => {
-    // Overflow above the starting clock is intentional; the floor stops a fast
-    // answer pushing someone negative before reapEmpty sees them.
-    p.ms = Math.max(0, p.ms + share);
+    // The floor stops a fast answer pushing someone negative before reapEmpty
+    // sees them. Only a GAIN is capped — a drain below the start is still
+    // allowed, or the cap would refund time the opponent earned.
+    const raised = Math.max(0, p.ms + share);
+    p.ms = firstRotationDone ? raised : Math.min(raised, startMs);
   });
 }
 
@@ -164,6 +193,7 @@ function startTimer(ctx) {
     }
     const active = live.players[live.turnIndex];
     if (active && active.alive && Date.now() - live.turnStartedAt >= active.ms) {
+      live.turnsTaken = (live.turnsTaken || 0) + 1;
       live.lastEvent = {
         userId: active.userId,
         kind: "timeout",
@@ -233,6 +263,9 @@ module.exports = {
         place: p.place,
       })),
       turnUserId: active ? active.userId : null,
+      wrongThisTurn: state.wrongThisTurn || 0,
+      turnsTaken: state.turnsTaken || 0,
+      firstRotationDone: (state.turnsTaken || 0) >= state.players.length,
       prompt: state.prompt,
       round: state.round,
       winner: state.winner,
@@ -243,6 +276,7 @@ module.exports = {
         multipliers: MULTIPLIERS,
         startSeconds: START_SECONDS_OPTIONS,
         abyssSeconds: ABYSS_SECONDS_OPTIONS,
+        wrongPenaltySeconds: WRONG_PENALTY_OPTIONS,
       },
     };
   },
@@ -290,6 +324,7 @@ module.exports = {
 
         // Clock ran out mid-thought: no transfer, just elimination.
         if (spentMs >= active.ms) {
+          state.turnsTaken = (state.turnsTaken || 0) + 1;
           state.lastEvent = {
             userId: ctx.userId,
             kind: "timeout",
@@ -304,16 +339,67 @@ module.exports = {
         }
 
         const correct = value === target(state);
+
+        // A WRONG ANSWER DOES NOT END YOUR TURN.
+        //
+        // It used to: the turn passed on and the answerer still shared out
+        // (spent - abyss). That made garbage the strongest play in the game —
+        // type any number instantly, pay almost nothing, drain everyone else,
+        // and hand on a prompt you never solved. You could win without ever
+        // doing arithmetic.
+        //
+        // Now a miss costs a fixed slice of your own clock and you stay on turn
+        // with the SAME number, so the only way out is to get it right. Guessing
+        // is still allowed; it is just paid for.
+        if (!correct) {
+          const penaltyMs = state.settings.wrongPenaltySeconds * 1000;
+          const spent = Math.max(0, Date.now() - state.turnStartedAt);
+          active.ms -= spent + penaltyMs;
+          state.wrongThisTurn = (state.wrongThisTurn || 0) + 1;
+          state.lastEvent = {
+            userId: ctx.userId,
+            kind: "wrong",
+            prompt: state.prompt,
+            answer: value,
+            spentMs: spent,
+            // Nothing is shared on a miss; the penalty is destroyed outright.
+            sharedMs: 0,
+            penaltyMs,
+          };
+
+          if (active.ms <= 0) {
+            // The penalty finished them off. Same path as any other empty clock.
+            // Their turn is over either way, so the rotation advances.
+            state.turnsTaken = (state.turnsTaken || 0) + 1;
+            eliminate(state, state.turnIndex);
+            state.turns = (state.turns || 0) + 1;
+            if (state.phase === "over") {
+              stopTimer(state);
+              return true;
+            }
+            advance(state, true);
+            state.wrongThisTurn = 0;
+            return true;
+          }
+
+          // Still their turn: re-base the clock so the time already spent is
+          // banked rather than charged twice.
+          state.turnStartedAt = Date.now();
+          return true;
+        }
+
         const abyssMs = state.settings.abyssSeconds * 1000;
         const others = state.players.filter(
           (p) => p.alive && p.userId !== active.userId,
         ).length;
 
         settleClock(state, spentMs);
-        if (correct) active.solved += 1;
+        active.solved += 1;
+        state.turnsTaken = (state.turnsTaken || 0) + 1;
+        state.wrongThisTurn = 0;
         state.lastEvent = {
           userId: ctx.userId,
-          kind: correct ? "correct" : "wrong",
+          kind: "correct",
           prompt: state.prompt,
           answer: value,
           spentMs,
@@ -325,9 +411,7 @@ module.exports = {
           stopTimer(state);
           return true;
         }
-        // A wrong answer passes the SAME number on, so the next player inherits
-        // a prompt someone already failed.
-        advance(state, correct);
+        advance(state, true);
         return true;
       }
 

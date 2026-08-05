@@ -31,11 +31,14 @@ export const MAX_NUMBER = 10_000;
 /** Lobby-configurable, with bounds the server clamps to. */
 export const START_SECONDS_OPTIONS = [10, 20, 30, 45, 60, 90, 120] as const;
 export const ABYSS_SECONDS_OPTIONS = [0.5, 1, 2, 3, 5] as const;
+/** Clock cost of a wrong answer. 0 restores the old "free guess" behaviour. */
+export const WRONG_PENALTY_OPTIONS = [0, 1, 2, 3, 5] as const;
 
 export const DEFAULT_SETTINGS: DuelSettings = {
   multiplier: 2,
   startSeconds: 30,
   abyssSeconds: 1,
+  wrongPenaltySeconds: 2,
 };
 
 export interface DuelSettings {
@@ -44,6 +47,14 @@ export interface DuelSettings {
   startSeconds: number;
   /** Seconds destroyed per answer — the reason a game terminates. */
   abyssSeconds: number;
+  /**
+   * Seconds a wrong answer costs, on top of the time spent.
+   *
+   * Without a cost, guessing was the strongest play: a miss used to pass the turn
+   * on AND still share out (spent - abyss), so instant garbage drained everyone
+   * else for almost nothing.
+   */
+  wrongPenaltySeconds: number;
 }
 
 export interface DuelPlayer {
@@ -79,7 +90,20 @@ export interface DuelState {
     spentMs: number;
     /** Per-opponent change; negative when the answer was faster than the abyss. */
     sharedMs: number;
+    /** Extra clock a miss cost, beyond the time spent. */
+    penaltyMs?: number;
   } | null;
+  /** Misses on the current number; reset when it is finally solved. */
+  wrongThisTurn: number;
+  /**
+   * How many DISTINCT players have finished a turn.
+   *
+   * Until everyone has had one, clocks are capped at the starting amount. In the
+   * first rotation the later players receive time before ever spending any, so
+   * without the cap the last seat could be sitting on a big surplus before their
+   * first question — a positional advantage nobody chose.
+   */
+  turnsTaken: number;
   round: number;
 }
 
@@ -108,6 +132,8 @@ export function createDuel(
     turnStartedAt: now,
     winner: null,
     lastEvent: null,
+    wrongThisTurn: 0,
+    turnsTaken: 0,
     round: 1,
   };
 }
@@ -180,6 +206,16 @@ function settleClock(state: DuelState, spentMs: number): DuelState {
   const pot = spentMs - abyssMs;
   const share = others.length > 0 ? pot / others.length : 0;
 
+  // NO OVERFLOW DURING THE FIRST ROTATION.
+  //
+  // Everyone should face their first question on an even footing. In round one
+  // the later seats collect time from earlier players before spending any of
+  // their own, so an uncapped first lap hands the last player a surplus purely
+  // for sitting later in the order. Once everyone has taken a turn the cap comes
+  // off and banking time is a legitimate reward for being fast.
+  const firstRotationDone = state.turnsTaken + 1 >= state.players.length;
+  const startMs = state.settings.startSeconds * 1000;
+
   return {
     ...state,
     players: state.players.map((p) => {
@@ -187,10 +223,13 @@ function settleClock(state: DuelState, spentMs: number): DuelState {
         return { ...p, ms: p.ms - spentMs };
       }
       if (!p.alive) return p;
-      // Overflow above the starting clock is allowed by design; a floor of 0
-      // stops a fast answer from pushing someone negative without eliminating
-      // them, which the caller checks for separately.
-      return { ...p, ms: Math.max(0, p.ms + share) };
+      // A floor of 0 stops a fast answer pushing someone negative without
+      // eliminating them; the caller checks for that separately.
+      const raised = Math.max(0, p.ms + share);
+      // Only a GAIN is capped. A drain below the start (from a fast answer) is
+      // still allowed, or the cap would refund time the opponent earned.
+      const capped = firstRotationDone ? raised : Math.min(raised, startMs);
+      return { ...p, ms: capped };
     }),
   };
 }
@@ -216,9 +255,16 @@ export interface AnswerResult {
 /**
  * The active player submits an answer.
  *
- * A wrong answer costs the turn's time but does NOT eliminate on its own —
- * you're only out when your clock empties. That keeps a single slip from ending
- * someone's game and makes the clock the sole currency.
+ * A WRONG ANSWER DOES NOT END YOUR TURN. It costs the time spent plus a fixed
+ * penalty, and you stay on the same number until you get it right.
+ *
+ * The turn used to pass on a miss, and the answerer still shared out
+ * (spent - abyss). That made garbage the strongest play in the game: type any
+ * number instantly, pay almost nothing, drain everyone else, and hand on a
+ * prompt you never solved. You could win without doing any arithmetic.
+ *
+ * You are still only eliminated when your clock empties — the clock stays the
+ * single currency.
  */
 export function answer(
   state: DuelState,
@@ -241,6 +287,7 @@ export function answer(
     const timedOut = eliminate(
       {
         ...state,
+        turnsTaken: state.turnsTaken + 1,
         lastEvent: {
           userId,
           kind: "timeout",
@@ -255,6 +302,46 @@ export function answer(
   }
 
   const correct = value === target(state);
+
+  if (!correct) {
+    const penaltyMs = state.settings.wrongPenaltySeconds * 1000;
+    const charged = spentMs + penaltyMs;
+    let missed: DuelState = {
+      ...state,
+      players: state.players.map((p) =>
+        p.userId === userId ? { ...p, ms: p.ms - charged } : p,
+      ),
+      wrongThisTurn: state.wrongThisTurn + 1,
+      lastEvent: {
+        userId,
+        kind: "wrong",
+        prompt: state.prompt,
+        answer: value,
+        spentMs,
+        // Nothing is shared on a miss; the penalty is destroyed outright.
+        sharedMs: 0,
+        penaltyMs,
+      },
+    };
+
+    const me = missed.players.find((p) => p.userId === userId)!;
+    if (me.ms <= 0) {
+      // The penalty finished them off — same path as any other empty clock.
+      // Their turn is over either way, so the rotation advances.
+      missed = { ...missed, turnsTaken: state.turnsTaken + 1 };
+      missed = eliminate(missed, state.turnIndex);
+      if (missed.phase === "over") return { state: missed, correct: false };
+      return { state: advance(missed, now, rng), correct: false };
+    }
+
+    // Still their turn on the SAME number. Re-base so the time already spent is
+    // banked rather than charged again on the next attempt.
+    return {
+      state: { ...missed, turnStartedAt: now },
+      correct: false,
+    };
+  }
+
   const abyssMs = state.settings.abyssSeconds * 1000;
   const others = state.players.filter(
     (p) => p.alive && p.userId !== active.userId,
@@ -264,11 +351,14 @@ export function answer(
   next = {
     ...next,
     players: next.players.map((p) =>
-      p.userId === userId && correct ? { ...p, solved: p.solved + 1 } : p,
+      p.userId === userId ? { ...p, solved: p.solved + 1 } : p,
     ),
+    // Counts completed turns, so the first-rotation cap knows when to lift.
+    turnsTaken: state.turnsTaken + 1,
+    wrongThisTurn: 0,
     lastEvent: {
       userId,
-      kind: correct ? "correct" : "wrong",
+      kind: "correct",
       prompt: state.prompt,
       answer: value,
       spentMs,
@@ -276,11 +366,9 @@ export function answer(
     },
   };
 
-  // A wrong answer keeps the same prompt with the next player, so the table
-  // inherits a number someone has already failed on.
   next = reapEmpty(next);
   if (next.phase === "over") return { state: next, correct };
-  return { state: advance(next, now, rng, correct), correct };
+  return { state: advance(next, now, rng), correct };
 }
 
 /** Hand the turn to the next living player, optionally with a fresh prompt. */
@@ -318,6 +406,7 @@ export function expireTurn(
   const out = eliminate(
     {
       ...state,
+      turnsTaken: state.turnsTaken + 1,
       lastEvent: {
         userId: active.userId,
         kind: "timeout",
@@ -352,5 +441,10 @@ export function cleanSettings(raw: unknown): DuelSettings {
   )
     ? (s.abyssSeconds as number)
     : DEFAULT_SETTINGS.abyssSeconds;
-  return { multiplier, startSeconds, abyssSeconds };
+  const wrongPenaltySeconds = (WRONG_PENALTY_OPTIONS as readonly number[]).includes(
+    s.wrongPenaltySeconds as number,
+  )
+    ? (s.wrongPenaltySeconds as number)
+    : DEFAULT_SETTINGS.wrongPenaltySeconds;
+  return { multiplier, startSeconds, abyssSeconds, wrongPenaltySeconds };
 }

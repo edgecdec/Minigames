@@ -45,7 +45,12 @@ t("target respects the multiplier", target(createDuel(["a", "b"], settings({ mul
 
 // --- the clock transfer ---
 // a spends 5s with abyss=1: a loses 5s, and 4s splits between b and c (2s each).
-s = createDuel(["a", "b", "c"], settings({ abyssSeconds: 1 }), 0, zero);
+// Started mid-game (turnsTaken preset) so the first-rotation cap isn't the thing
+// under test here — the raw arithmetic is.
+s = {
+  ...createDuel(["a", "b", "c"], settings({ abyssSeconds: 1 }), 0, zero),
+  turnsTaken: 3,
+};
 let after = solve(s, 5_000);
 t("answerer pays what they spent", ms(after, "a") === 25_000, String(ms(after, "a")));
 t("opponents split spent-minus-abyss", ms(after, "b") === 32_000 && ms(after, "c") === 32_000,
@@ -58,10 +63,69 @@ t("solve is counted", after.players.find((p) => p.userId === "a")!.solved === 1)
 t("abyss destroys exactly its amount",
   totalMs(s) - totalMs(after) === 1_000, `${totalMs(s)} -> ${totalMs(after)}`);
 
-// Overflow above the starting clock is allowed on purpose.
+// --- the first rotation is capped at the starting clock ---
+// With two players, a's turn IS the first rotation completing, so b is capped.
 s = createDuel(["a", "b"], settings({ startSeconds: 30, abyssSeconds: 1 }), 0, zero);
 after = solve(s, 20_000);
-t("clocks may overflow the starting max", ms(after, "b") === 49_000, String(ms(after, "b")));
+t("no overflow while the first rotation is unfinished", ms(after, "b") === 30_000,
+  String(ms(after, "b")));
+
+// Once everyone has had a turn the cap lifts. Proven by comparing the SAME
+// transfer before and after the rotation completes: a player sitting at the
+// starting clock gains nothing while capped, and gains normally afterwards.
+{
+  const cfg = settings({ startSeconds: 30, abyssSeconds: 1 });
+  // During the lap: b is at 30s, so a 19s share is thrown away by the cap.
+  let capped = createDuel(["a", "b", "c"], cfg, 0, zero);
+  capped = solve(capped, 20_000);
+  t("a full clock gains nothing while capped", ms(capped, "b") === 30_000,
+    String(ms(capped, "b")));
+
+  // After the lap: the identical situation now pays out.
+  let free = { ...createDuel(["a", "b", "c"], cfg, 0, zero), turnsTaken: 3 };
+  free = solve(free, 20_000);
+  t("the same share pays out after the first lap", ms(free, "b") > 30_000,
+    String(ms(free, "b")));
+  t("and it can exceed the starting clock", ms(free, "b") === 39_500,
+    String(ms(free, "b")));
+}
+
+// Three players: the cap must hold for the whole first lap, not just turn one.
+{
+  let g = createDuel(["a", "b", "c"], settings({ startSeconds: 30, abyssSeconds: 1 }), 0, zero);
+  g = solve(g, 20_000);              // turn 1 of 3
+  t("3p: nobody over the start after turn 1",
+    g.players.every((p) => p.ms <= 30_000), JSON.stringify(g.players.map((p) => p.ms)));
+  g = solve(g, 20_000);              // turn 2 of 3
+  t("3p: still nobody over the start after turn 2",
+    g.players.every((p) => p.ms <= 30_000), JSON.stringify(g.players.map((p) => p.ms)));
+  g = solve(g, 20_000);              // turn 3 completes the rotation
+  t("3p: rotation complete", g.turnsTaken === 3, String(g.turnsTaken));
+  // Beyond the lap the cap no longer applies. Everyone has spent by now, so the
+  // check is that the cap is not being enforced rather than that a clock is high.
+  const beforeLift = ms(g, "b");
+  g = solve(g, 20_000);              // turn 4 — cap is off
+  t("3p: shares still pay out after the lap", ms(g, "b") > beforeLift,
+    `${Math.round(beforeLift)} -> ${Math.round(ms(g, "b"))}`);
+}
+
+// The cap must not refund a DRAIN. A fast answer still takes time off people
+// during the first rotation — capping only limits gains.
+{
+  let g = createDuel(["a", "b"], settings({ startSeconds: 30, abyssSeconds: 3 }), 0, zero);
+  g = solve(g, 500);                 // faster than the abyss, so b loses time
+  t("a fast answer still drains during the first rotation", ms(g, "b") < 30_000,
+    String(ms(g, "b")));
+}
+
+// An elimination still advances the rotation, so the cap can't be held open by
+// someone going out on their first turn.
+{
+  let g = createDuel(["a", "b", "c"], settings({ startSeconds: 10, wrongPenaltySeconds: 5 }), 0, zero);
+  g = answer(g, "a", -1, g.turnStartedAt, zero).state;
+  g = answer(g, "a", -1, g.turnStartedAt, zero).state;   // a out on turn 1
+  t("elimination counts as a completed turn", g.turnsTaken === 1, String(g.turnsTaken));
+}
 
 // Answering faster than the abyss DRAINS the opponents.
 s = createDuel(["a", "b"], settings({ abyssSeconds: 3 }), 0, zero);
@@ -69,16 +133,72 @@ after = solve(s, 500);
 t("a fast answer takes time off opponents", ms(after, "b") === 27_500, String(ms(after, "b")));
 t("and barely costs the answerer", ms(after, "a") === 29_500, String(ms(after, "a")));
 
-// --- wrong answers ---
-s = createDuel(["a", "b"], settings(), 0, zero);
+// --- wrong answers: you keep the turn and pay for the miss ---
+s = createDuel(["a", "b"], settings({ wrongPenaltySeconds: 2 }), 0, zero);
 const wrongPrompt = s.prompt;
 let wrong = answer(s, "a", target(s) + 1, 4_000, zero);
 t("a wrong answer is not correct", !wrong.correct);
-t("wrong still costs the time spent", ms(wrong.state, "a") === 26_000, String(ms(wrong.state, "a")));
-t("wrong does NOT eliminate you", wrong.state.players[0].alive);
-t("the same prompt passes on after a wrong answer", wrong.state.prompt === wrongPrompt,
+// 4s spent + 2s penalty
+t("wrong costs the time spent PLUS the penalty", ms(wrong.state, "a") === 24_000,
+  String(ms(wrong.state, "a")));
+t("wrong does NOT eliminate you outright", wrong.state.players[0].alive);
+t("YOU KEEP THE TURN after a miss", activePlayer(wrong.state)!.userId === "a",
+  activePlayer(wrong.state)!.userId);
+t("the number does not change after a miss", wrong.state.prompt === wrongPrompt,
   `${wrong.state.prompt} vs ${wrongPrompt}`);
-t("turn still moves on a wrong answer", activePlayer(wrong.state)!.userId === "b");
+t("a miss shares nothing with opponents", ms(wrong.state, "b") === 30_000,
+  String(ms(wrong.state, "b")));
+t("misses on the number are counted", wrong.state.wrongThisTurn === 1);
+t("the miss reports its penalty", wrong.state.lastEvent?.penaltyMs === 2_000,
+  String(wrong.state.lastEvent?.penaltyMs));
+
+// The exploit this closes: instant garbage used to be the strongest play,
+// because it passed the turn on AND still drained everyone else.
+{
+  let g = createDuel(["a", "b"], settings({ startSeconds: 30, wrongPenaltySeconds: 2 }), 0, zero);
+  const oppBefore = ms(g, "b");
+  // Five instant wrong answers in a row.
+  for (let i = 0; i < 5; i++) {
+    g = answer(g, "a", -1, g.turnStartedAt, zero).state;
+  }
+  t("spamming wrong answers never passes the turn", activePlayer(g)!.userId === "a");
+  t("spamming wrong answers costs the spammer", ms(g, "a") === 30_000 - 5 * 2_000,
+    String(ms(g, "a")));
+  t("spamming wrong answers gives opponents nothing", ms(g, "b") === oppBefore,
+    `${oppBefore} -> ${ms(g, "b")}`);
+  t("five misses are all counted", g.wrongThisTurn === 5, String(g.wrongThisTurn));
+}
+
+// Getting it right afterwards clears the miss counter and passes the turn.
+{
+  let g = createDuel(["a", "b"], settings({ wrongPenaltySeconds: 1 }), 0, zero);
+  g = answer(g, "a", -1, g.turnStartedAt, zero).state;
+  t("still on turn after one miss", activePlayer(g)!.userId === "a");
+  g = answer(g, "a", target(g), g.turnStartedAt + 1_000, zero).state;
+  t("a correct answer finally passes the turn", activePlayer(g)!.userId === "b");
+  t("the miss counter resets on a solve", g.wrongThisTurn === 0);
+  t("the solve is credited", g.players.find((p) => p.userId === "a")!.solved === 1);
+}
+
+// The penalty can eliminate you, which is the real deterrent.
+{
+  let g = createDuel(["a", "b", "c"], settings({ startSeconds: 10, wrongPenaltySeconds: 5 }), 0, zero);
+  g = answer(g, "a", -1, g.turnStartedAt, zero).state;      // -5s -> 5s left
+  t("survives the first miss", g.players[0].alive, String(ms(g, "a")));
+  g = answer(g, "a", -1, g.turnStartedAt, zero).state;      // -5s -> 0 -> out
+  t("the penalty can eliminate you", !g.players[0].alive, String(ms(g, "a")));
+  t("elimination by penalty still assigns a place", g.players[0].place === 3);
+  t("and the turn moves on", activePlayer(g)!.userId !== "a");
+}
+
+// A zero penalty keeps guessing free, but you STILL keep the turn — so it can
+// never be used to skip a number.
+{
+  let g = createDuel(["a", "b"], settings({ wrongPenaltySeconds: 0 }), 0, zero);
+  g = answer(g, "a", -1, g.turnStartedAt, zero).state;
+  t("zero penalty costs nothing extra", ms(g, "a") === 30_000, String(ms(g, "a")));
+  t("but the turn is still yours", activePlayer(g)!.userId === "a");
+}
 
 // --- out of turn ---
 s = createDuel(["a", "b"], settings(), 0, zero);
@@ -142,6 +262,13 @@ t("accepts allowed values", (() => {
   const c = cleanSettings({ multiplier: 9, startSeconds: 60, abyssSeconds: 5 });
   return c.multiplier === 9 && c.startSeconds === 60 && c.abyssSeconds === 5;
 })());
+t("wrong penalty defaults to 2s", cleanSettings({}).wrongPenaltySeconds === 2);
+t("wrong penalty accepts allowed values",
+  cleanSettings({ wrongPenaltySeconds: 5 }).wrongPenaltySeconds === 5);
+t("wrong penalty rejects off-list values",
+  cleanSettings({ wrongPenaltySeconds: 4 }).wrongPenaltySeconds === 2);
+t("wrong penalty allows an explicit zero",
+  cleanSettings({ wrongPenaltySeconds: 0 }).wrongPenaltySeconds === 0);
 t("rejects off-list start times", cleanSettings({ startSeconds: 31 }).startSeconds === 30);
 t("rejects non-object", cleanSettings(null).multiplier === 2 && cleanSettings("x").startSeconds === 30);
 t("every multiplier is selectable",

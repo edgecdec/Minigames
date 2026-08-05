@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
@@ -25,10 +26,47 @@ export default function Lobby() {
   const [savedName, setSavedName] = useLocalStorage("minigames:playerName", "");
   const room = useRoom();
 
+  /**
+   * Room code from a shared link (/multiplayer?room=ABCD).
+   *
+   * Read once on mount rather than from a hook, because we deliberately strip it
+   * from the URL straight afterwards: leaving it there means a refresh after
+   * leaving would silently drag you back into the room you just left.
+   */
+  const [linkCode, setLinkCode] = useState<string | null>(null);
+  const readLink = useRef(false);
+
+  useEffect(() => {
+    if (readLink.current) return;
+    readLink.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("room");
+    if (!raw) return;
+    const code = raw.trim().toUpperCase().replace(/[^A-Z2-9]/g, "").slice(0, 4);
+    if (code.length === 4) setLinkCode(code);
+    // Clean the URL but keep the history entry, so Back still works.
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+  /**
+   * Auto-join only when we already know the player's name. A first-time visitor
+   * following a link still needs the name box, so the code is prefilled instead
+   * and they press Join.
+   */
+  const autoJoined = useRef(false);
+  useEffect(() => {
+    if (autoJoined.current) return;
+    if (!linkCode || !savedName.trim()) return;
+    if (room.status !== "idle") return;
+    autoJoined.current = true;
+    room.join(linkCode, savedName.trim());
+  }, [linkCode, savedName, room]);
+
   if (room.status === "idle" || room.status === "error" || !room.state) {
     return (
       <RoomJoin
         initialName={savedName}
+        initialCode={linkCode ?? ""}
         connecting={room.status === "connecting"}
         error={room.error}
         onJoin={(code, name) => {

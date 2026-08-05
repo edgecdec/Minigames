@@ -182,6 +182,24 @@ states. Real bugs the Snake tests caught:
 For UI-level checks against the deployed site, Nova Act is available (see
 `.ralph/DEPLOY.local.md`).
 
+### Multiplayer needs socket tests too
+
+`logic.ts` tests cannot reach turn timing, the server-owned clock, host
+authority, or surviving a restart. Those live in `test/multiplayer/` and drive
+real socket.io clients against a real server — read that README before adding
+one, because every false failure I hit there was the harness rather than the
+product (inherited working directories, a lingering process on the port, asserting
+on a clock that is actively draining).
+
+Layer the tests. Each caught bugs the layer below could not:
+
+- **unit** — rules. Caught Snake's tail-tip collision and Codenames' `-es` plural
+  bug.
+- **socket** — wiring. Caught a duel whose tick loop never started, and a drain
+  that ENDED the game it was meant to preserve.
+- **browser** — the DOM. Caught a canvas that was silently 300x150, and a paused
+  clock rendering as 0.0s for everyone.
+
 ## Deployment
 
 Push to `main` auto-deploys via a GitHub webhook. A failed build leaves the previous

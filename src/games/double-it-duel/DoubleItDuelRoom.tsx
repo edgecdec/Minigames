@@ -20,7 +20,6 @@ export interface DuelPublicState {
     multiplier: number;
     startSeconds: number;
     abyssSeconds: number;
-    wrongPenaltySeconds: number;
   };
   players: {
     userId: string;
@@ -45,7 +44,6 @@ export interface DuelPublicState {
     multipliers: number[];
     startSeconds: number[];
     abyssSeconds: number[];
-    wrongPenaltySeconds: number[];
   };
   /** Misses on the current number. */
   wrongThisTurn: number;
@@ -187,7 +185,7 @@ export default function DoubleItDuelRoom({
         <>
           <SettingsPanel
             disabled={!isHost}
-            note={`Answer fast and the leftover time goes to everyone else — minus ${state.settings.abyssSeconds}s that vanishes for good, which is what forces a game to end. Answer faster than that and you drain them instead. Nobody can bank above ${state.settings.startSeconds}s until everyone has had one turn, so going late is no advantage.`}
+            note={`Answer fast and the leftover time goes to everyone else — minus ${state.settings.abyssSeconds}s that vanishes for good, which is what forces a game to end. Answer faster than that and you drain them instead. Nobody can bank above ${state.settings.startSeconds}s until everyone has had one turn, so going late is no advantage. A wrong answer keeps your turn on the same number — your clock just keeps running.`}
             rows={[
               {
                 field: "multiplier",
@@ -211,14 +209,6 @@ export default function DoubleItDuelRoom({
                 options: state.options.abyssSeconds,
                 value: state.settings.abyssSeconds,
                 format: (s) => `${s}s`,
-              },
-              {
-                field: "wrongPenaltySeconds",
-                label: "Wrong answer costs",
-                hint: "A miss keeps your turn — you stay on the same number until you get it.",
-                options: state.options.wrongPenaltySeconds,
-                value: state.settings.wrongPenaltySeconds,
-                format: (s) => (s === 0 ? "free" : `${s}s`),
               },
             ]}
             onChange={(field, value) => send("settings", { [field]: value })}
@@ -251,7 +241,7 @@ export default function DoubleItDuelRoom({
           {state.wrongThisTurn > 0 ? (
             <Typography variant="caption" sx={{ color: "#ff5c8a", fontWeight: 700 }}>
               {state.wrongThisTurn} wrong on this number
-              {myTurn ? " — still your turn" : ""}
+              {myTurn ? " — still yours, clock running" : ""}
             </Typography>
           ) : null}
           {!state.firstRotationDone ? (

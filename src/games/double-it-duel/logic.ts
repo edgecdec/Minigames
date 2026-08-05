@@ -31,14 +31,11 @@ export const MAX_NUMBER = 10_000;
 /** Lobby-configurable, with bounds the server clamps to. */
 export const START_SECONDS_OPTIONS = [10, 20, 30, 45, 60, 90, 120] as const;
 export const ABYSS_SECONDS_OPTIONS = [0.5, 1, 2, 3, 5] as const;
-/** Clock cost of a wrong answer. 0 restores the old "free guess" behaviour. */
-export const WRONG_PENALTY_OPTIONS = [0, 1, 2, 3, 5] as const;
 
 export const DEFAULT_SETTINGS: DuelSettings = {
   multiplier: 2,
   startSeconds: 30,
   abyssSeconds: 1,
-  wrongPenaltySeconds: 2,
 };
 
 export interface DuelSettings {
@@ -47,14 +44,6 @@ export interface DuelSettings {
   startSeconds: number;
   /** Seconds destroyed per answer — the reason a game terminates. */
   abyssSeconds: number;
-  /**
-   * Seconds a wrong answer costs, on top of the time spent.
-   *
-   * Without a cost, guessing was the strongest play: a miss used to pass the turn
-   * on AND still share out (spent - abyss), so instant garbage drained everyone
-   * else for almost nothing.
-   */
-  wrongPenaltySeconds: number;
 }
 
 export interface DuelPlayer {
@@ -90,8 +79,6 @@ export interface DuelState {
     spentMs: number;
     /** Per-opponent change; negative when the answer was faster than the abyss. */
     sharedMs: number;
-    /** Extra clock a miss cost, beyond the time spent. */
-    penaltyMs?: number;
   } | null;
   /** Misses on the current number; reset when it is finally solved. */
   wrongThisTurn: number;
@@ -255,8 +242,9 @@ export interface AnswerResult {
 /**
  * The active player submits an answer.
  *
- * A WRONG ANSWER DOES NOT END YOUR TURN. It costs the time spent plus a fixed
- * penalty, and you stay on the same number until you get it right.
+ * A WRONG ANSWER DOES NOT END YOUR TURN. You stay on the SAME number until you
+ * get it right, and your clock keeps running the whole time — which is the only
+ * cost a miss needs.
  *
  * The turn used to pass on a miss, and the answerer still shared out
  * (spent - abyss). That made garbage the strongest play in the game: type any
@@ -304,12 +292,14 @@ export function answer(
   const correct = value === target(state);
 
   if (!correct) {
-    const penaltyMs = state.settings.wrongPenaltySeconds * 1000;
-    const charged = spentMs + penaltyMs;
+    // No extra penalty is needed. Keeping the turn IS the cost: your clock is
+    // still running on the same number, so every wrong guess spends real time
+    // and hands nothing to anyone else. An added charge would just be punishing
+    // the same mistake twice.
     let missed: DuelState = {
       ...state,
       players: state.players.map((p) =>
-        p.userId === userId ? { ...p, ms: p.ms - charged } : p,
+        p.userId === userId ? { ...p, ms: p.ms - spentMs } : p,
       ),
       wrongThisTurn: state.wrongThisTurn + 1,
       lastEvent: {
@@ -318,9 +308,8 @@ export function answer(
         prompt: state.prompt,
         answer: value,
         spentMs,
-        // Nothing is shared on a miss; the penalty is destroyed outright.
+        // Nothing is shared on a miss — a miss must never fund the table.
         sharedMs: 0,
-        penaltyMs,
       },
     };
 
@@ -441,10 +430,5 @@ export function cleanSettings(raw: unknown): DuelSettings {
   )
     ? (s.abyssSeconds as number)
     : DEFAULT_SETTINGS.abyssSeconds;
-  const wrongPenaltySeconds = (WRONG_PENALTY_OPTIONS as readonly number[]).includes(
-    s.wrongPenaltySeconds as number,
-  )
-    ? (s.wrongPenaltySeconds as number)
-    : DEFAULT_SETTINGS.wrongPenaltySeconds;
-  return { multiplier, startSeconds, abyssSeconds, wrongPenaltySeconds };
+  return { multiplier, startSeconds, abyssSeconds };
 }

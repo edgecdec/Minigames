@@ -13,19 +13,12 @@
 const MULTIPLIERS = [2, 3, 4, 5, 6, 7, 8, 9];
 const START_SECONDS_OPTIONS = [10, 20, 30, 45, 60, 90, 120];
 const ABYSS_SECONDS_OPTIONS = [0.5, 1, 2, 3, 5];
-/** Clock cost of a wrong answer. 0 keeps the old "free guess" behaviour. */
-const WRONG_PENALTY_OPTIONS = [0, 1, 2, 3, 5];
 const MIN_NUMBER = 1;
 const MAX_NUMBER = 10000;
 /** How often the clock is broadcast while a turn runs. */
 const TICK_MS = 200;
 
-const DEFAULT_SETTINGS = {
-  multiplier: 2,
-  startSeconds: 30,
-  abyssSeconds: 1,
-  wrongPenaltySeconds: 2,
-};
+const DEFAULT_SETTINGS = { multiplier: 2, startSeconds: 30, abyssSeconds: 1 };
 
 function cleanSettings(raw) {
   const s = raw && typeof raw === "object" ? raw : {};
@@ -37,9 +30,6 @@ function cleanSettings(raw) {
     abyssSeconds: ABYSS_SECONDS_OPTIONS.includes(s.abyssSeconds)
       ? s.abyssSeconds
       : DEFAULT_SETTINGS.abyssSeconds,
-    wrongPenaltySeconds: WRONG_PENALTY_OPTIONS.includes(s.wrongPenaltySeconds)
-      ? s.wrongPenaltySeconds
-      : DEFAULT_SETTINGS.wrongPenaltySeconds,
   };
 }
 
@@ -276,7 +266,6 @@ module.exports = {
         multipliers: MULTIPLIERS,
         startSeconds: START_SECONDS_OPTIONS,
         abyssSeconds: ABYSS_SECONDS_OPTIONS,
-        wrongPenaltySeconds: WRONG_PENALTY_OPTIONS,
       },
     };
   },
@@ -348,13 +337,15 @@ module.exports = {
         // and hand on a prompt you never solved. You could win without ever
         // doing arithmetic.
         //
-        // Now a miss costs a fixed slice of your own clock and you stay on turn
-        // with the SAME number, so the only way out is to get it right. Guessing
-        // is still allowed; it is just paid for.
+        // Now you stay on the SAME number until you solve it, with your clock
+        // running. That is the entire cost: guessing burns your own time and
+        // funds nobody.
         if (!correct) {
-          const penaltyMs = state.settings.wrongPenaltySeconds * 1000;
+          // No extra penalty. Keeping the turn IS the cost: the clock is still
+          // running on the same number, so a wrong guess spends real time and
+          // gives nothing to anyone else.
           const spent = Math.max(0, Date.now() - state.turnStartedAt);
-          active.ms -= spent + penaltyMs;
+          active.ms -= spent;
           state.wrongThisTurn = (state.wrongThisTurn || 0) + 1;
           state.lastEvent = {
             userId: ctx.userId,
@@ -362,9 +353,8 @@ module.exports = {
             prompt: state.prompt,
             answer: value,
             spentMs: spent,
-            // Nothing is shared on a miss; the penalty is destroyed outright.
+            // A miss must never fund the table.
             sharedMs: 0,
-            penaltyMs,
           };
 
           if (active.ms <= 0) {

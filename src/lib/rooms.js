@@ -30,6 +30,17 @@ const crypto = require("crypto");
 const rooms = new Map();
 
 /**
+ * Set while the process is shutting down.
+ *
+ * Socket teardown during a shutdown must NOT be treated as players leaving:
+ * the disconnect handler transfers the host seat to whoever is still connected,
+ * so a drain would reassign the host based on the order sockets happen to close.
+ * That really happened — a restart handed the host seat, and the game, to the
+ * other player.
+ */
+let shuttingDown = false;
+
+/**
  * Room codes a human can read aloud: no I/O/0/1, which get misheard and
  * mistyped constantly.
  */
@@ -40,6 +51,15 @@ const MAX_NAME = 16;
 const MAX_ROOMS = 500;
 /** An empty room lingers this long so a refresh doesn't destroy the game. */
 const EMPTY_ROOM_GRACE_MS = 60_000;
+/**
+ * A room restored from a snapshot gets a longer grace period.
+ *
+ * Everyone comes back `connected: false`, so the normal 60s countdown starts
+ * immediately and would delete the room before slower players finish
+ * reconnecting — which is exactly the outage this whole feature exists to
+ * survive. Five minutes covers a deploy plus people getting back to the tab.
+ */
+const RESTORED_ROOM_GRACE_MS = 5 * 60_000;
 
 /**
  * Characters that break a player list rather than merely look odd: control
@@ -135,6 +155,11 @@ function createRoom(code, hostId) {
      * restart path needs to freeze EVERY room regardless of what it's playing.
      */
     paused: null,
+    /**
+     * True for a room brought back from a snapshot with nobody reconnected yet.
+     * Buys a longer sweep grace period; cleared once anyone returns.
+     */
+    restored: false,
     players: new Map(),
     /** null until the host picks one. */
     gameSlug: null,
@@ -181,11 +206,14 @@ function sweepRooms() {
     const anyConnected = Array.from(room.players.values()).some((p) => p.connected);
     if (anyConnected) {
       room.emptySince = null;
+      // Somebody made it back, so this is an ordinary room again.
+      room.restored = false;
       continue;
     }
+    const grace = room.restored ? RESTORED_ROOM_GRACE_MS : EMPTY_ROOM_GRACE_MS;
     if (room.emptySince === null) {
       room.emptySince = now;
-    } else if (now - room.emptySince > EMPTY_ROOM_GRACE_MS) {
+    } else if (now - room.emptySince > grace) {
       if (room.state && room.state.timer) clearTimeout(room.state.timer);
       rooms.delete(code);
     }
@@ -419,6 +447,10 @@ function attach(io, { verifyIdentity }) {
 
     function handleDeparture(explicit) {
       if (!currentCode || !userId) return;
+      // During a shutdown every socket closes at once. Treating that as people
+      // leaving would reassign the host and eliminate players in the games that
+      // forfeit on leave — corrupting the very state we are about to save.
+      if (shuttingDown) return;
       const room = rooms.get(currentCode);
       const code = currentCode;
       currentCode = null;
@@ -459,10 +491,37 @@ function attach(io, { verifyIdentity }) {
   });
 }
 
+/**
+ * Pause every live room and write them to the database. Called on shutdown.
+ *
+ * Pausing FIRST is the whole trick: it stops every timer and banks any elapsed
+ * turn, so what gets written is plain data with nothing time-dependent left to
+ * reconstruct.
+ */
+function drainRooms(io = null, dbOptions = {}) {
+  // Freeze the membership rules before any socket closes.
+  shuttingDown = true;
+  for (const room of rooms.values()) {
+    if (room.gameSlug && room.state) {
+      pauseRoom(room, { by: null, reason: "restart" }, io);
+    }
+  }
+  const { saveRooms } = require("./roomPersistence.js");
+  return saveRooms(rooms, dbOptions);
+}
+
+/** Load snapshotted rooms back into memory, paused. Called at boot. */
+function restoreRooms(dbOptions = {}) {
+  const { loadRooms } = require("./roomPersistence.js");
+  return loadRooms(rooms, createRoom, dbOptions);
+}
+
 module.exports = {
   attach,
   pauseRoom,
   resumeRoom,
+  drainRooms,
+  restoreRooms,
   registerGame,
   listGames,
   rooms,

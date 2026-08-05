@@ -104,6 +104,24 @@ function attachMultiplayer(httpServer) {
 
     rooms.attach(io, { verifyIdentity: verifySocketIdentity });
     console.log(`> Multiplayer ready (${rooms.listGames().join(", ")})`);
+
+    // Bring back any rooms saved by the last shutdown. Done AFTER registerGame
+    // so a restored room's game handlers already exist.
+    try {
+      const { restored, dropped } = rooms.restoreRooms();
+      if (restored > 0) {
+        console.log(`> Restored ${restored} paused room(s) from the last restart`);
+      }
+      if (dropped > 0) {
+        console.log(`> Dropped ${dropped} stale room snapshot(s)`);
+      }
+    } catch (err) {
+      // A restore failure costs the old lobbies, nothing more — new rooms still
+      // work, so this must never stop the server from coming up.
+      console.error("[rooms] restore failed:", err.message);
+    }
+
+    installShutdownHandler(rooms, io);
   } catch (err) {
     // The single-player games are the bulk of the site and must still serve.
     console.error("=".repeat(72));
@@ -111,6 +129,35 @@ function attachMultiplayer(httpServer) {
     console.error(err);
     console.error("=".repeat(72));
   }
+}
+
+/**
+ * Save live rooms when pm2 stops us.
+ *
+ * `pm2 restart` sends SIGINT and then SIGKILL if we linger, so this has to be
+ * quick — a synchronous SQLite write, no awaiting anything. Without it every
+ * deploy destroyed every active lobby, and the client's auto-rejoin reported
+ * "No room called ABCD", which reads to a player as if they mistyped the code.
+ */
+function installShutdownHandler(rooms, io) {
+  let draining = false;
+
+  const drain = (signal) => {
+    // pm2 can deliver more than one signal; a second pass would write over the
+    // snapshot with rooms we have already torn down.
+    if (draining) return;
+    draining = true;
+    try {
+      const { saved } = rooms.drainRooms(io);
+      console.log(`> ${signal}: paused and saved ${saved} room(s)`);
+    } catch (err) {
+      console.error("[rooms] drain failed:", err.message);
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => drain("SIGINT"));
+  process.on("SIGTERM", () => drain("SIGTERM"));
 }
 
 /**

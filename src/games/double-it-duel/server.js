@@ -361,10 +361,20 @@ module.exports = {
     const state = ctx.state;
     if (!state || state.phase !== "playing") return;
     const active = state.players[state.turnIndex];
-    if (active && active.alive) {
+    if (active && active.alive && state.turnStartedAt) {
       const spent = Math.max(0, Date.now() - state.turnStartedAt);
-      // Clamp: a long pause must not push the clock negative behind our back.
-      active.ms = Math.max(0, active.ms - spent);
+      // Never bank the clock below a floor.
+      //
+      // Clamping to 0 looks harmless but is not: a zero clock is how this game
+      // represents ELIMINATION, so a pause that landed exactly on someone's last
+      // moment used to knock them out and hand the win to whoever was left. That
+      // really happened during a restart — the drain ended the game it was
+      // supposed to be preserving.
+      //
+      // Pausing must never change who is alive. Leave a sliver on the clock and
+      // let the player spend it once they are actually back and playing.
+      const MIN_LEFT = 250;
+      active.ms = Math.max(MIN_LEFT, active.ms - spent);
     }
     state.turnStartedAt = null;
     stopTimer(state);

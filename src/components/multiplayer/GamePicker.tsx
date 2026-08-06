@@ -85,6 +85,19 @@ export default function GamePicker({
                   <Typography variant="body2" color="text.secondary">
                     {g.blurb}
                   </Typography>
+                  {/*
+                    Shown on the SELECTED card only. These rules aren't guessable
+                    and the field existed unrendered — but printing all of them at
+                    once buries the choice itself.
+                  */}
+                  {selected ? (
+                    <Typography
+                      variant="caption"
+                      sx={{ color: "text.secondary", display: "block", mt: 0.75 }}
+                    >
+                      {g.howToPlay}
+                    </Typography>
+                  ) : null}
                 </Stack>
               </Stack>
             </CardActionArea>

@@ -54,20 +54,6 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
   },
   {
     slug: "double-it-duel",
-    title: "Double It Duel",
-    blurb: "Multiplication under a shared clock. Take too long and you fund everyone else.",
-    icon: "⏳",
-    minPlayers: 2,
-    howToPlay:
-      "Everyone starts with the same clock, but only the player on turn is losing time. " +
-      "Answer correctly and the time you took — minus the amount that falls into the abyss — " +
-      "is split among everyone else. Overflow above the starting clock is allowed, so answering " +
-      "fast banks a real cushion. Run out of time or answer wrong and you're out. The host sets " +
-      "the multiplier, the starting clock, and the abyss.",
-    status: "live",
-  },
-  {
-    slug: "double-it-duel",
     title: "Double It! Duel",
     blurb: "One clock each. Answer fast to bank time and drain everyone else.",
     icon: "⏱️",
@@ -76,7 +62,9 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
       "Everyone starts with the same clock, but only the person on turn burns time. " +
       "Answer and the time you took comes off your clock and is handed to the others — " +
       "minus a slice that vanishes for good, which is why a game always ends. Beat that " +
-      "slice and you drain them instead. Run out and you're eliminated; last one left wins.",
+      "slice and you drain them instead. A wrong answer keeps your turn on the same " +
+      "number, so guessing just burns your own clock. Nobody can bank above the starting " +
+      "time until everyone has had one turn. Run out and you're eliminated; last one left wins.",
     status: "live",
   },
 ];
@@ -84,3 +72,21 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
 export function getMultiplayerGame(slug: string): MultiplayerGameMeta | undefined {
   return MULTIPLAYER_GAMES.find((g) => g.slug === slug);
 }
+
+/**
+ * Slugs must be unique. A duplicate silently renders two picker cards for the
+ * same game and collides on the React key — which is exactly what happened when
+ * a patch appended an entry instead of replacing one. Throwing at import time
+ * makes it a build failure rather than something you notice in the lobby.
+ */
+(() => {
+  const seen = new Set<string>();
+  for (const game of MULTIPLAYER_GAMES) {
+    if (seen.has(game.slug)) {
+      throw new Error(
+        `multiplayerRegistry: duplicate slug "${game.slug}" — each game may appear once`,
+      );
+    }
+    seen.add(game.slug);
+  }
+})();

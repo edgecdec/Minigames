@@ -76,6 +76,9 @@ const chebyshev = (a, b) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 
 // ---------------------------------------------------------------- maps
 
+const rect = (x, y, x0, y0, x1, y1) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+const disc = (x, y, cx, cy, r) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
+
 const ellipse = (x, y, cx, cy, rx, ry) =>
   ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1;
 
@@ -157,6 +160,79 @@ const MAPS = [
       ellipse(x, y, 8, 26, 7, 15) ||
       ellipse(x, y, 48, 26, 7, 15) ||
       ellipse(x, y, 28, 40, 10, 8),
+  },
+  {
+    // Blocky arcade alien. Eye channels are notched OPEN to the top edge; a sealed
+    // socket would seed the flood fill and break enclosure near it.
+    name: "Invader",
+    cols: 52,
+    rows: 44,
+    bestFor: "4-8",
+    mask: (x, y) =>
+      (rect(x, y, 10, 8, 41, 31) ||
+        rect(x, y, 16, 2, 35, 8) ||
+        rect(x, y, 4, 14, 10, 34) ||
+        rect(x, y, 41, 14, 47, 34) ||
+        rect(x, y, 12, 31, 20, 40) ||
+        rect(x, y, 31, 31, 39, 40)) &&
+      !rect(x, y, 19, 0, 23, 14) &&
+      !rect(x, y, 28, 0, 32, 14),
+  },
+  {
+    // Two bulbs and a narrow waist: everyone funnels through the middle.
+    name: "Hourglass",
+    cols: 48,
+    rows: 52,
+    bestFor: "2-6",
+    mask: (x, y) =>
+      disc(x, y, 24, 13, 13) || disc(x, y, 24, 39, 13) || rect(x, y, 20, 12, 28, 40),
+  },
+  {
+    // A ring, hole OPENED to the outside — an enclosed hole seeds the fill.
+    name: "Donut",
+    cols: 52,
+    rows: 52,
+    bestFor: "4-8",
+    mask: (x, y) =>
+      ellipse(x, y, 26, 26, 24, 24) &&
+      !(ellipse(x, y, 26, 26, 9, 9) || rect(x, y, 24, 0, 28, 26)),
+  },
+  {
+    name: "Heart",
+    cols: 48,
+    rows: 44,
+    bestFor: "2-6",
+    mask: (x, y) =>
+      disc(x, y, 16, 14, 11) ||
+      disc(x, y, 32, 14, 11) ||
+      (Math.abs(x - 24) <= (40 - y) * 0.72 && y >= 14 && y <= 40),
+  },
+  {
+    // Five spikes off a fat centre; the tips are cul-de-sacs.
+    name: "Star",
+    cols: 52,
+    rows: 50,
+    bestFor: "4-8",
+    mask: (x, y) => {
+      const cx = 26;
+      const cy = 25;
+      const ang = Math.atan2(y - cy, x - cx);
+      const r = Math.hypot(x - cx, y - cy);
+      return r <= 10 + 14 * (0.5 + 0.5 * Math.cos(5 * (ang + Math.PI / 2)));
+    },
+  },
+  {
+    // Sockets notched in from the SIDES, so the forehead stays one solid mass and
+    // the holes still reach the outside. Mirrors logic.ts.
+    name: "Skull",
+    cols: 48,
+    rows: 48,
+    bestFor: "4-8",
+    mask: (x, y) =>
+      (ellipse(x, y, 24, 20, 18, 16) &&
+        !(disc(x, y, 16, 18, 4) || rect(x, y, 0, 16, 16, 20)) &&
+        !(disc(x, y, 32, 18, 4) || rect(x, y, 32, 16, 47, 20))) ||
+      rect(x, y, 17, 34, 30, 42),
   },
 ];
 

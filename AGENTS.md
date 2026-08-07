@@ -259,6 +259,11 @@ Adding one:
   registering. Judge by a majority of the 8 neighbours, against the ownership
   snapshot from the start of the tick. Consequence: land must be ~3+ cells thick to
   be defensible, which is deliberate — territory has to be held, not outlined.
+- **A map obstacle is cover, not a free wall for your enclosure.** Because the fill
+  conducts through walls, ringing a block completely encloses its interior, but
+  pinning a pocket against the block's edge encloses nothing. New boards are checked
+  for stranded open ground and for ~55%+ defensible (3-cell-thick) area — a board of
+  1-2 wide passages is one where nobody can defend anything.
 - **A flood fill from the border needs a border it can start from.** Land Grab
   seeds its enclosure fill on the board edge. On a shaped map every edge cell is
   wall, so treating walls as boundary left the fill with no seed, every playable

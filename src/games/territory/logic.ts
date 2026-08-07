@@ -34,9 +34,17 @@
  *   lose a single cell except by being enclosed.
  *
  * Enclosure is a flood fill inward from the board edge: anything the fill cannot
- * reach is sealed. That handles a pocket bounded by any mix of your own land and
- * map walls without special-casing shapes, which is what lets the maps be
- * arbitrary silhouettes rather than rectangles.
+ * reach is sealed. Walls CONDUCT the fill (they are outside the shape) and are
+ * never claimed, which is what lets the maps be arbitrary silhouettes rather than
+ * rectangles.
+ *
+ * ONE CONSEQUENCE, worth knowing before designing a board: you cannot use an
+ * obstacle as one side of an enclosure. Ring a block completely and its interior is
+ * yours (measured: 64 cells); pin a pocket against the block's edge and you get
+ * nothing, because the fill comes in through the rock. So walls are cover and
+ * chokepoints, not free walls for your own perimeter — which also means a big open
+ * void inside a shape has to be channelled to the outside, or nothing touching it
+ * can ever be enclosed.
  */
 
 export interface Cell {
@@ -148,6 +156,18 @@ export interface TerritoryMap {
   art?: string[];
   mask?: (x: number, y: number, cols: number, rows: number) => boolean;
 }
+
+const rect = (
+  x: number,
+  y: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): boolean => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+
+const disc = (x: number, y: number, cx: number, cy: number, r: number): boolean =>
+  (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 
 const ellipse = (
   x: number,
@@ -264,6 +284,87 @@ export const MAPS: TerritoryMap[] = [
       ellipse(x, y, 8, 26, 7, 15) ||
       ellipse(x, y, 48, 26, 7, 15) ||
       ellipse(x, y, 28, 40, 10, 8),
+  },
+  {
+    // A blocky arcade alien. Long open arms and legs, with two vertical eye
+    // channels notched OPEN to the top edge — a sealed socket would seed the flood
+    // fill and break enclosure anywhere near it.
+    name: "Invader",
+    cols: 52,
+    rows: 44,
+    bestFor: "4-8",
+    mask: (x, y) =>
+      (rect(x, y, 10, 8, 41, 31) ||
+        rect(x, y, 16, 2, 35, 8) ||
+        rect(x, y, 4, 14, 10, 34) ||
+        rect(x, y, 41, 14, 47, 34) ||
+        rect(x, y, 12, 31, 20, 40) ||
+        rect(x, y, 31, 31, 39, 40)) &&
+      !rect(x, y, 19, 0, 23, 14) &&
+      !rect(x, y, 28, 0, 32, 14),
+  },
+  {
+    // Two bulbs joined by a narrow waist: everyone funnels through the middle, so
+    // the waist is worth holding and worth raiding.
+    name: "Hourglass",
+    cols: 48,
+    rows: 52,
+    bestFor: "2-6",
+    mask: (x, y) =>
+      disc(x, y, 24, 13, 13) || disc(x, y, 24, 39, 13) || rect(x, y, 20, 12, 28, 40),
+  },
+  {
+    // A ring. The hole is OPENED to the outside by a channel, because an enclosed
+    // hole seeds the fill: you could never enclose anything touching it.
+    name: "Donut",
+    cols: 52,
+    rows: 52,
+    bestFor: "4-8",
+    mask: (x, y) =>
+      ellipse(x, y, 26, 26, 24, 24) &&
+      !(ellipse(x, y, 26, 26, 9, 9) || rect(x, y, 24, 0, 28, 26)),
+  },
+  {
+    // Two lobes over a taper. The point at the bottom is a dead end — easy to
+    // claim, hard to escape if someone corners you there.
+    name: "Heart",
+    cols: 48,
+    rows: 44,
+    bestFor: "2-6",
+    mask: (x, y) =>
+      disc(x, y, 16, 14, 11) ||
+      disc(x, y, 32, 14, 11) ||
+      (Math.abs(x - 24) <= (40 - y) * 0.72 && y >= 14 && y <= 40),
+  },
+  {
+    // Five spikes off a fat centre. The spike tips are cul-de-sacs, so chasing
+    // someone into one is a real play.
+    name: "Star",
+    cols: 52,
+    rows: 50,
+    bestFor: "4-8",
+    mask: (x, y) => {
+      const cx = 26;
+      const cy = 25;
+      const ang = Math.atan2(y - cy, x - cx);
+      const r = Math.hypot(x - cx, y - cy);
+      // Radius oscillates with angle: five lobes, point-up.
+      return r <= 10 + 14 * (0.5 + 0.5 * Math.cos(5 * (ang + Math.PI / 2)));
+    },
+  },
+  {
+    // Cranium and jaw. The eye sockets are notched in from the SIDES rather than
+    // upward, so the forehead stays one solid mass instead of three thin strips —
+    // and they still reach the outside, which keeps them out of the flood fill.
+    name: "Skull",
+    cols: 48,
+    rows: 48,
+    bestFor: "4-8",
+    mask: (x, y) =>
+      (ellipse(x, y, 24, 20, 18, 16) &&
+        !(disc(x, y, 16, 18, 4) || rect(x, y, 0, 16, 16, 20)) &&
+        !(disc(x, y, 32, 18, 4) || rect(x, y, 32, 16, 47, 20))) ||
+      rect(x, y, 17, 34, 30, 42),
   },
 ];
 

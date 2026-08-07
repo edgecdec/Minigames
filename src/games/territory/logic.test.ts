@@ -877,5 +877,84 @@ for (const m of MAPS) {
     }));
 }
 
+// ---------- every board must obey the rules the ENGINE imposes ----------
+//
+// Three constraints, each learned the hard way while designing boards. A new map
+// that breaks any of them is broken in a way that is invisible until someone plays
+// it, so they are enforced here rather than left to judgement.
+for (const m of MAPS) {
+  const g = buildGrid(m);
+  const open = g.filter((v) => v === OPEN).length;
+
+  // 1. NO OPEN VOID SEALED INSIDE THE SHAPE.
+  //
+  //    The fill spreads THROUGH walls — that is what lets a silhouette work — so a
+  //    wall pocket is only a problem when it is a big OPEN void that a player can
+  //    reach, like an un-channelled Donut hole. Measured, the distinction is:
+  //      - a 6x6 solid block with your ring fully AROUND it: encloses 64 cells, fine
+  //      - the same block used as ONE WALL of your ring: encloses 0
+  //    The second is a real quirk of the mechanic and applies to any obstacle, so it
+  //    is documented rather than banned. What must not exist is an unreachable
+  //    pocket of OPEN ground, which would make "board full" unreachable — and that
+  //    is exactly what the connectivity check above already covers.
+  //
+  //    So this now asserts the thing that genuinely breaks a board: no open cell may
+  //    be cut off from the rest.
+  const openSeen = new Uint8Array(g.length);
+  const stack: number[] = [];
+  const first = g.findIndex((v) => v === OPEN);
+  if (first >= 0) {
+    openSeen[first] = 1;
+    stack.push(first);
+  }
+  const spread = (x: number, y: number) => {
+    if (x < 0 || x >= m.cols || y < 0 || y >= m.rows) return;
+    const i = idxIn(m.cols, x, y);
+    if (openSeen[i] || g[i] === WALL) return;
+    openSeen[i] = 1;
+    stack.push(i);
+  };
+  while (stack.length) {
+    const i = stack.pop()!;
+    const x = i % m.cols;
+    const y = (i - x) / m.cols;
+    spread(x + 1, y);
+    spread(x - 1, y);
+    spread(x, y + 1);
+    spread(x, y - 1);
+  }
+  let stranded = 0;
+  for (let i = 0; i < g.length; i++) if (g[i] === OPEN && !openSeen[i]) stranded++;
+  t(`${m.name}: no open ground stranded from the rest`, stranded === 0, stranded);
+
+  // 2. BIG ENOUGH TO PLAY. A board that is mostly rock is a corridor, not a board.
+  t(`${m.name}: enough open ground for a real round`, open >= 700, open);
+
+  // 3. MOSTLY DEFENSIBLE. Land must be ~3+ cells thick to be defended (see the
+  //    thickness tests above), so a board built from 1-2 wide passages is one where
+  //    nobody can ever defend anything.
+  let thick = 0;
+  for (let y = 1; y < m.rows - 1; y++) {
+    for (let x = 1; x < m.cols - 1; x++) {
+      if (g[idxIn(m.cols, x, y)] !== OPEN) continue;
+      let all = true;
+      for (let dy = -1; dy <= 1 && all; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (g[idxIn(m.cols, x + dx, y + dy)] !== OPEN) {
+            all = false;
+            break;
+          }
+        }
+      }
+      if (all) thick++;
+    }
+  }
+  const pct = Math.round((100 * thick) / open);
+  // 55% is the floor the existing corridor-style boards actually hit (Spiral Vault
+  // measures 59% with 5-wide passages, which play fine). Below that a board is
+  // mostly 1-2 wide passages, where nobody can defend anything.
+  t(`${m.name}: mostly defensible ground (${pct}%)`, pct >= 55, pct);
+}
+
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

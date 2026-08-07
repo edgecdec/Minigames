@@ -125,6 +125,103 @@ a.s.emit("game_event", { event: "settings", data: { raidingAllowed: true } });
 await wait(400);
 t("and back on", a.game()?.settings?.raidingAllowed === true);
 
+// Raid speed and spawn protection are configurable, and both re-validated server
+// side — the options list is the allow-list.
+a.s.emit("game_event", { event: "settings", data: { enemySlowdown: 5 } });
+await wait(400);
+t("raid speed can be set", a.game()?.settings?.enemySlowdown === 5,
+  String(a.game()?.settings?.enemySlowdown));
+a.s.emit("game_event", { event: "settings", data: { enemySlowdown: 99 } });
+await wait(400);
+t("a bogus raid speed is refused", a.game()?.settings?.enemySlowdown === 5,
+  String(a.game()?.settings?.enemySlowdown));
+t("raid speeds are offered", (a.game()?.options?.enemySlowdown ?? []).includes(1),
+  JSON.stringify(a.game()?.options?.enemySlowdown));
+
+a.s.emit("game_event", { event: "settings", data: { protectSeconds: 0 } });
+await wait(400);
+t("spawn protection can be turned off", a.game()?.settings?.protectSeconds === 0,
+  String(a.game()?.settings?.protectSeconds));
+a.s.emit("game_event", { event: "settings", data: { protectSeconds: 999 } });
+await wait(400);
+t("a bogus protection length is refused", a.game()?.settings?.protectSeconds === 0,
+  String(a.game()?.settings?.protectSeconds));
+a.s.emit("game_event", { event: "settings", data: { protectSeconds: 3 } });
+await wait(400);
+t("and restored", a.game()?.settings?.protectSeconds === 3);
+
+// The bigger and shaped boards must be offered, with their dimensions.
+{
+  const maps = a.game()?.options?.maps ?? [];
+  t("every map reports its size", maps.every((m) => m.cols > 0 && m.rows > 0),
+    JSON.stringify(maps.map((m) => `${m.name} ${m.cols}x${m.rows}`)));
+  t("there are boards bigger than 40x40", maps.some((m) => m.cols > 40 && m.rows > 40),
+    JSON.stringify(maps.map((m) => `${m.cols}x${m.rows}`)));
+  t("the shaped boards are offered",
+    ["Cat", "Dog", "Spiral Vault"].every((n) => maps.some((m) => m.name === n)),
+    JSON.stringify(maps.map((m) => m.name)));
+  t("each says who it fits", maps.every((m) => /\d/.test(m.bestFor ?? "")),
+    JSON.stringify(maps.map((m) => m.bestFor)));
+}
+
+// A shaped board must come through with its own dimensions and real walls.
+a.s.emit("game_event", { event: "settings", data: { mapName: "Cat" } });
+await wait(600);
+{
+  const g = a.game();
+  t("a shaped map changes the board size", g.cols === 52 && g.rows === 48,
+    `${g.cols}x${g.rows}`);
+  const { grid } = unpack(g.grid, g.cols * g.rows);
+  const walls = grid.filter((v) => v === -1).length;
+  t("the silhouette has walls", walls > 200, walls);
+  t("and claimable excludes them", g.claimable === g.cols * g.rows - walls,
+    [g.claimable, g.cols * g.rows - walls]);
+}
+// A SHAPED MAP MUST NOT END THE ROUND INSTANTLY.
+//
+// The flood fill seeds from the board border, and every border cell of a
+// silhouette is wall. With walls treated as boundary the fill never started, the
+// whole playable area read as "enclosed", and the first player to move claimed the
+// entire board — the round was over at tick 2. The pure-logic tests missed it
+// because they only ever enclosed things on rectangular maps.
+{
+  a.s.emit("game_event", { event: "settings", data: { mapName: "Cat", roundSeconds: 60 } });
+  await wait(600);
+  a.s.emit("game_event", { event: "start" });
+  // Past the wall-clock 3-2-1, then a couple of seconds of real ticks.
+  await wait(6500);
+  t("a shaped map is still PLAYING after the countdown", a.game()?.phase === "playing",
+    `${a.game()?.phase}/${a.game()?.endReason}`);
+  t("the tick loop advanced", (a.game()?.tick ?? 0) > 5, String(a.game()?.tick));
+  t("nobody instantly owns the board",
+    (a.game()?.players ?? []).every((p) => p.cells < (a.game()?.claimable ?? 0) / 2),
+    JSON.stringify((a.game()?.players ?? []).map((p) => p.cells)));
+  t("open ground remains", (a.game()?.openCells ?? 0) > 500, String(a.game()?.openCells));
+}
+
+// Settings are refused mid-round on purpose: rebuilding the grid under everyone
+// standing on it would be worse than making the host wait.
+{
+  const mapDuring = a.game()?.settings?.mapName;
+  a.s.emit("game_event", { event: "settings", data: { mapName: "Open Field" } });
+  await wait(500);
+  t("settings are refused while a round is running",
+    a.game()?.settings?.mapName === mapDuring && a.game()?.phase === "playing",
+    `${a.game()?.settings?.mapName}/${a.game()?.phase}`);
+}
+
+// Let the round finish, then switch back to a small board for the rest of the suite.
+{
+  const deadline = Date.now() + 80_000;
+  while (a.game()?.phase === "playing" && Date.now() < deadline) await wait(1000);
+  t("the shaped round ended on its own", a.game()?.phase === "over", String(a.game()?.phase));
+  a.s.emit("game_event", { event: "settings", data: { mapName: "Open Field", roundSeconds: 60 } });
+  await wait(700);
+  t("settings work again once the round is over",
+    a.game()?.settings?.mapName === "Open Field", String(a.game()?.settings?.mapName));
+  t("and we are back in the lobby", a.game()?.phase === "waiting", String(a.game()?.phase));
+}
+
 // ---------- starting runs a real countdown, then a real tick loop ----------
 b.errors.length = 0;
 b.s.emit("game_event", { event: "start" });
@@ -172,27 +269,46 @@ t("spawn protection is reported", (a.game()?.protectedTicks ?? -1) >= 0,
     [at, now]);
 }
 
-// ---------- players claim ground by moving ----------
+// ---------- every square you walk on is claimed, permanently ----------
 {
-  // Drive in a small square: out of the block and back, which must close a loop.
-  const dirs = [
-    { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 0, y: -1 },
-  ];
-  let grew = false;
-  const startCells = a.game()?.players?.find((p) => p.userId === a.joined.userId)?.cells ?? 0;
-  for (let lap = 0; lap < 6 && !grew; lap++) {
-    for (const dir of dirs) {
-      a.s.emit("game_event", { event: "turn", data: { dir } });
-      await wait(500);
-    }
-    const cells = a.game()?.players?.find((p) => p.userId === a.joined.userId)?.cells ?? 0;
-    if (cells > startCells) grew = true;
-  }
-  t("driving a loop claims ground", grew,
-    `${startCells} -> ${a.game()?.players?.find((p) => p.userId === a.joined.userId)?.cells}`);
+  const mine = () => a.game()?.players?.find((p) => p.userId === a.joined.userId)?.cells ?? 0;
+  const startCells = mine();
+  // Just walk. No loop to close any more — a cell is claimed the moment you enter
+  // it, so simply moving must grow the count.
+  a.s.emit("game_event", { event: "turn", data: { dir: { x: 1, y: 0 } } });
+  await wait(1500);
+  t("walking claims ground", mine() > startCells, `${startCells} -> ${mine()}`);
+
+  // Re-walking your own ground must cost nothing: claims are permanent, so there
+  // is no way to lose what you already hold by stepping back over it.
+  const held = mine();
+  a.s.emit("game_event", { event: "turn", data: { dir: { x: -1, y: 0 } } });
+  await wait(1500);
+  t("re-walking your own ground never loses it", mine() >= held, `${held} -> ${mine()}`);
+
   t("nobody exceeds the claimable board",
     (a.game()?.players ?? []).reduce((n, p) => n + p.cells, 0) <= (a.game()?.claimable ?? 0),
     [(a.game()?.players ?? []).map((p) => p.cells), a.game()?.claimable]);
+  t("there are no trails in the public state",
+    (a.game()?.players ?? []).every((p) => p.trail === undefined),
+    JSON.stringify(Object.keys((a.game()?.players ?? [])[0] ?? {})));
+  t("open cells are reported so the UI can show progress",
+    typeof a.game()?.openCells === "number", String(a.game()?.openCells));
+}
+
+// ---------- REVERSING is allowed ----------
+{
+  // Snake forbids it because you would hit your own body. Nothing here can hurt
+  // you from behind, and refusing the input made the controls feel broken.
+  const posOf = () => a.game()?.players?.find((p) => p.userId === a.joined.userId)?.at;
+  a.s.emit("game_event", { event: "turn", data: { dir: { x: 1, y: 0 } } });
+  await wait(900);
+  const before = { ...posOf() };
+  a.s.emit("game_event", { event: "turn", data: { dir: { x: -1, y: 0 } } });
+  await wait(1200);
+  const after = posOf();
+  t("an immediate reversal is accepted and moves you back",
+    after.x < before.x || after.y !== before.y, [before, after]);
 }
 
 // ---------- pause freezes the tick AND preserves the round clock ----------
@@ -227,6 +343,22 @@ t("spawn protection is reported", (a.game()?.protectedTicks ?? -1) >= 0,
   t("standings are sorted by held ground",
     (a.game()?.standings ?? []).every((s, i, arr) => i === 0 || arr[i - 1].cells >= s.cells),
     JSON.stringify(a.game()?.standings?.map((s) => s.cells)));
+  t("it says why it ended",
+    ["full", "time", "stalled"].includes(a.game()?.endReason), String(a.game()?.endReason));
+  // Ties SHARE a place: equal scores get the same rank and the next distinct score
+  // skips. Numbering them 2, 3, 4 would invent an order the game never decided.
+  {
+    const st = a.game()?.standings ?? [];
+    t("every row carries a rank", st.every((s) => typeof s.rank === "number"),
+      JSON.stringify(st.map((s) => [s.cells, s.rank, s.tied])));
+    t("equal scores share a rank, unequal ones don't",
+      st.every((s, i, arr) =>
+        i === 0 || (arr[i - 1].cells === s.cells ? s.rank === arr[i - 1].rank : s.rank === i + 1)),
+      JSON.stringify(st.map((s) => [s.cells, s.rank, s.tied])));
+    t("the tied flag matches the ranks",
+      st.every((s) => s.tied === st.filter((o) => o.cells === s.cells).length > 1),
+      JSON.stringify(st.map((s) => [s.cells, s.tied])));
+  }
 
   const winner = a.game()?.winner;
   if (winner) {

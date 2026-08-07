@@ -19,21 +19,37 @@ export interface TerritoryPublicState {
   players: {
     userId: string;
     at: { x: number; y: number };
-    trail: { x: number; y: number }[];
     cells: number;
     stalled: boolean;
-    timesReset: number;
     everClaimed: number;
+    enclosed: number;
   }[];
   mapName: string;
-  settings: { mapName: string; raidingAllowed: boolean; roundSeconds: number };
-  options: { mapNames: string[]; roundSeconds: number[] };
+  settings: {
+    mapName: string;
+    raidingAllowed: boolean;
+    roundSeconds: number;
+    enemySlowdown: number;
+    protectSeconds: number;
+  };
+  options: {
+    maps: { name: string; cols: number; rows: number; bestFor: string }[];
+    mapNames: string[];
+    roundSeconds: number[];
+    enemySlowdown: number[];
+    protectSeconds: number[];
+  };
   tick: number;
   ticksLeft: number;
   secondsLeft: number;
   countdown: number;
   winner: string | null;
-  standings: { userId: string; cells: number; timesReset: number }[] | null;
+  /** `rank` is competition-style: equal scores share a place (1, T2, T2, 4). */
+  standings:
+    | { userId: string; cells: number; enclosed: number; rank: number; tied: boolean }[]
+    | null;
+  endReason: "full" | "time" | "stalled" | null;
+  openCells: number;
   wins: Record<string, number>;
   raidingAllowed: boolean;
   cols: number;
@@ -43,14 +59,17 @@ export interface TerritoryPublicState {
   tickMs: number;
 }
 
-/** Board is drawn in these units and scaled to whatever CSS size it gets. */
+/**
+ * Longest edge, in drawing units. The other edge is derived from the map's aspect
+ * ratio — boards are no longer square (the Arena is 60x48, the Dog 56x50), so a
+ * fixed square would squash them.
+ */
 const BOARD_PX = 640;
 const WALL = -1;
 
 /**
- * Territory needs two tones per player — a solid fill for owned land and a
- * brighter one for the trail and head — so the board reads at a glance even when
- * four people overlap.
+ * Two tones per player: a solid fill for owned land and a brighter head, so the
+ * board reads at a glance even when four people overlap.
  */
 const YOU = { land: "#4a3d8f", edge: "#7c5cff", head: "#c9b8ff" };
 const OTHERS = [
@@ -84,7 +103,10 @@ export default function TerritoryRoom({
   roomWins,
 }: RoomGameProps<TerritoryPublicState>) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cell = BOARD_PX / state.cols;
+  // Square cells on a non-square board: size off the longer edge.
+  const cell = BOARD_PX / Math.max(state.cols, state.rows);
+  const drawW = cell * state.cols;
+  const drawH = cell * state.rows;
 
   const nameFor = useCallback(
     (id: string) => players.find((p) => p.id === id)?.name ?? "Player",
@@ -146,16 +168,19 @@ export default function TerritoryRoom({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    const cssSize = canvas.clientWidth || BOARD_PX;
-    canvas.width = Math.round(cssSize * dpr);
-    canvas.height = Math.round(cssSize * dpr);
+    const cssW = canvas.clientWidth || drawW;
+    // Keep the pixel buffer in the board's aspect ratio, or a 60x48 map renders
+    // stretched. MUI's Box would leave this at the 300x150 default entirely, which
+    // is why this is a plain <canvas> sized imperatively.
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssW * (drawH / drawW) * dpr);
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const scale = (cssSize / BOARD_PX) * dpr;
+    const scale = (cssW / drawW) * dpr;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
     ctx.fillStyle = "#12142a";
-    ctx.fillRect(0, 0, BOARD_PX, BOARD_PX);
+    ctx.fillRect(0, 0, drawW, drawH);
 
     // Owned land and walls, straight off the grid.
     for (let y = 0; y < state.rows; y++) {
@@ -177,14 +202,16 @@ export default function TerritoryRoom({
     // Faint grid over the top, so individual cells stay countable.
     ctx.strokeStyle = "rgba(255,255,255,0.035)";
     ctx.lineWidth = 0.5;
-    for (let i = 1; i < state.cols; i++) {
+    for (let x = 1; x < state.cols; x++) {
       ctx.beginPath();
-      ctx.moveTo(i * cell, 0);
-      ctx.lineTo(i * cell, BOARD_PX);
+      ctx.moveTo(x * cell, 0);
+      ctx.lineTo(x * cell, drawH);
       ctx.stroke();
+    }
+    for (let y = 1; y < state.rows; y++) {
       ctx.beginPath();
-      ctx.moveTo(0, i * cell);
-      ctx.lineTo(BOARD_PX, i * cell);
+      ctx.moveTo(0, y * cell);
+      ctx.lineTo(drawW, y * cell);
       ctx.stroke();
     }
 
@@ -192,15 +219,8 @@ export default function TerritoryRoom({
 
     state.players.forEach((p) => {
       const palette = paletteFor(p.userId, userId, otherIds);
-      // Trails brighter than land: an exposed trail is the thing to watch.
-      ctx.fillStyle = palette.edge;
-      ctx.globalAlpha = 0.85;
-      p.trail.forEach((c) => {
-        ctx.fillRect(c.x * cell + 0.5, c.y * cell + 0.5, cell - 1, cell - 1);
-      });
-      ctx.globalAlpha = 1;
-
-      // Head last, so it's never buried under someone else's trail.
+      // No trail to draw any more — a claimed cell IS the record of where you went.
+      // Just the head, bright, drawn last so it is never buried under land.
       ctx.fillStyle = palette.head;
       ctx.fillRect(p.at.x * cell, p.at.y * cell, cell, cell);
 
@@ -227,13 +247,19 @@ export default function TerritoryRoom({
 
     if (state.phase === "countdown") {
       ctx.fillStyle = "rgba(15,17,32,0.72)";
-      ctx.fillRect(0, 0, BOARD_PX, BOARD_PX);
+      ctx.fillRect(0, 0, drawW, drawH);
       ctx.fillStyle = "#e6e7f0";
       ctx.textAlign = "center";
       ctx.font = "bold 96px -apple-system, system-ui, sans-serif";
-      ctx.fillText(String(state.countdown), BOARD_PX / 2, BOARD_PX / 2 + 32);
+      ctx.fillText(String(state.countdown), drawW / 2, drawH / 2 + 32);
     }
-  }, [state, grid, cell, userId, otherIds]);
+  }, [state, grid, cell, drawW, drawH, userId, otherIds]);
+
+  // Dimensions and a suggested lobby size for the selected board.
+  const selectedMap = state.options.maps?.find((m) => m.name === state.settings.mapName);
+  const mapHint = selectedMap
+    ? `${selectedMap.cols}x${selectedMap.rows} · best for ${selectedMap.bestFor} players`
+    : undefined;
 
   const me = state.players.find((p) => p.userId === userId);
   const share = (cells: number) =>
@@ -317,7 +343,8 @@ export default function TerritoryRoom({
         style={{
           width: BOARD_PX,
           maxWidth: "100%",
-          aspectRatio: "1 / 1",
+          // Per-map, so a 60x48 board isn't squashed into a square.
+          aspectRatio: `${state.cols} / ${state.rows}`,
           height: "auto",
           border: "2px solid #7c5cff",
           borderRadius: 6,
@@ -349,8 +376,10 @@ export default function TerritoryRoom({
               </Typography>
             ) : null}
             <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
-              Arrow keys, WASD, or swipe · leave your land to draw a trail, get back
-              to claim it
+              Arrow keys, WASD, or swipe · every square you walk on is yours for good
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {state.openCells} squares left
             </Typography>
           </Stack>
         </>
@@ -359,28 +388,32 @@ export default function TerritoryRoom({
       {state.phase === "waiting" ? (
         <Stack spacing={1.5} sx={{ width: "100%" }} alignItems="center">
           <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-            Claim ground by looping out of your own territory and back. Biggest area
-            when the clock runs out wins. Cut someone&apos;s trail and they lose
-            everything.
+            Every square you walk on is yours permanently. Seal a region off and
+            everything inside it becomes yours too — including opponents&apos; ground.
+            The round ends when the board is full, and the biggest area wins.
           </Typography>
           <SettingsPanel
             title="Round settings"
             note={
               state.settings.raidingAllowed
-                ? "Raiding on: you can take enemy land, but you move slowly on it."
-                : "Raiding off: enemy territory is a solid wall."
+                ? "Raiding on: you can take enemy land, but you crawl while on it."
+                : "Raiding off: enemy land is solid, so the only way to take ground is to surround it. Raid speed has no effect."
             }
             disabled={!isHost}
             rows={[
               {
                 field: "mapName",
                 label: "Map",
+                // Board size comes with the name, so the host can see which maps
+                // suit the size of the lobby.
+                hint: mapHint,
                 options: state.options.mapNames,
                 value: state.settings.mapName,
               },
               {
                 field: "roundSeconds",
                 label: "Round length",
+                hint: "A backstop — the round also ends when the board is full",
                 options: state.options.roundSeconds,
                 value: state.settings.roundSeconds,
                 format: (s) => `${Number(s) / 60}m`,
@@ -388,9 +421,25 @@ export default function TerritoryRoom({
               {
                 field: "raidingAllowed",
                 label: "Raiding",
-                hint: "Capture enemy land at a slower pace",
+                hint: "Let players take ground off each other",
                 options: ["on", "off"],
                 value: state.settings.raidingAllowed ? "on" : "off",
+              },
+              {
+                field: "enemySlowdown",
+                label: "Raid speed",
+                hint: "How much you slow down on enemy ground. 1x is no penalty.",
+                options: state.options.enemySlowdown,
+                value: state.settings.enemySlowdown,
+                format: (n) => (Number(n) === 1 ? "full speed" : `${n}x slower`),
+              },
+              {
+                field: "protectSeconds",
+                label: "Spawn protection",
+                hint: "Opening grace period before anyone can be raided",
+                options: state.options.protectSeconds,
+                value: state.settings.protectSeconds,
+                format: (n) => (Number(n) === 0 ? "off" : `${n}s`),
               },
             ]}
             onChange={(field, value) =>
@@ -424,21 +473,34 @@ export default function TerritoryRoom({
                 ? "🏆 You win"
                 : `${nameFor(state.winner)} wins`}
           </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {state.endReason === "full"
+              ? "The board filled up."
+              : state.endReason === "stalled"
+                ? "Not enough players left."
+                : "Time ran out."}
+          </Typography>
           <Stack spacing={0.5} sx={{ width: "100%", maxWidth: 340 }}>
-            {(state.standings ?? []).map((s, i) => (
+            {(state.standings ?? []).map((s) => (
               <Stack key={s.userId} direction="row" justifyContent="space-between">
                 <Typography variant="body2" color="text.secondary">
-                  {i + 1}. {s.userId === userId ? "You" : nameFor(s.userId)}
+                  {/*
+                    Tied players SHARE a place and show a T prefix — T2, T2, then 4.
+                    Numbering them 2, 3, 4 would invent an order the game never
+                    decided.
+                  */}
+                  {s.tied ? `T${s.rank}` : `${s.rank}`}.{" "}
+                  {s.userId === userId ? "You" : nameFor(s.userId)}
                 </Typography>
                 <Typography variant="body2" sx={{ fontWeight: 700 }}>
                   {share(s.cells)}%
-                  {s.timesReset > 0 ? (
+                  {s.enclosed > 0 ? (
                     <Typography
                       component="span"
                       variant="caption"
                       sx={{ color: "text.secondary", ml: 1 }}
                     >
-                      reset {s.timesReset}×
+                      {s.enclosed} enclosed
                     </Typography>
                   ) : null}
                 </Typography>

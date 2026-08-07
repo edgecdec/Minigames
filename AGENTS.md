@@ -253,6 +253,11 @@ Adding one:
   needs a stable anon id; generating one per `join_room` seats the same browser
   as several players and the room waits forever on people who don't exist. This
   was a real bug — the browser test caught it after the protocol test didn't.
+- **A flood fill from the border needs a border it can start from.** Land Grab
+  seeds its enclosure fill on the board edge. On a shaped map every edge cell is
+  wall, so treating walls as boundary left the fill with no seed, every playable
+  cell counted as enclosed, and the first player to move won instantly. Walls now
+  CONDUCT the fill (they are outside the shape) and are never claimed.
 - **No `Set` or `Map` in a game's state.** Room snapshots are JSON, and a `Set`
   serialises to `{}` — a paused Land Grab room would come back with everyone
   holding nothing. Where logic.ts uses a Set for convenience, server.js derives

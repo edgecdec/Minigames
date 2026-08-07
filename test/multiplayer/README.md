@@ -17,6 +17,9 @@ PORT=3070 node test/multiplayer/switch-games.test.mjs
 PORT=3086 node test/multiplayer/codenames-flow.test.mjs
 PORT=3090 node test/multiplayer/territory.test.mjs
 
+# needs no server at all — imports both copies of the rules directly
+npx tsx test/multiplayer/territory-map-parity.test.mjs
+
 # these start and stop the server themselves — do NOT have one running
 PORT=3080 node test/multiplayer/persistence.test.mjs
 PORT=3081 node test/multiplayer/persistence-edges.test.mjs
@@ -42,7 +45,8 @@ and nothing reclaims its seat.
 | `persistence.test.mjs` | Full restart: SIGINT → snapshot → boot → restore → reclaim seats → resume → keep playing |
 | `persistence-edges.test.mjs` | Lobby-only rooms aren't saved, finished games restore as finished, stale snapshots are dropped, Snake's tick freezes and resumes, Land Grab's held ground survives |
 | `switch-games.test.mjs` | Back-to-lobby keeps the room, host-only, and the room win tally surviving game switches |
-| `territory.test.mjs` | Land Grab: registration, RLE grid decode, host-only settings, wall-clock countdown, tick loop, claiming, pause, round end |
+| `territory.test.mjs` | Land Grab: registration, RLE grid decode, host-only settings, wall-clock countdown, tick loop, claiming, reversal, shaped maps, pause, round end, tie ranks |
+| `territory-map-parity.test.mjs` | Both copies of the Land Grab maps agree cell-for-cell |
 | `codenames-flow.test.mjs` | Rounds auto-advance with no host input, word authorship, and the server's duplicated copy of the rules |
 | `one-browser-one-player.test.mjs` | `/api/identity`, two tabs sharing one seat, closing a duplicate tab, and wins surviving a restart |
 
@@ -90,6 +94,14 @@ The suites are shaped to prevent each one:
   port makes the new one die with EADDRINUSE while `curl` still returns 200 — so a
   brand-new game looks unregistered and its tests fail for no visible reason.
   `grep "Multiplayer ready" ` the log and check your game is listed.
+- **Test every MAP, not just the default one.** Land Grab's flood fill seeded from
+  the board border, and every border cell of a silhouette is wall — so on the Cat
+  the fill never started, the whole board read as "enclosed", and the first mover
+  claimed everything at tick 2. The rectangular maps never exercised that path. A
+  socket trace found it; the DOM just showed a board that refused to start.
+- **A UI control can be below the fold.** A browser check clicked Start, saw the
+  game not start, and looked like a product bug — five settings rows had pushed the
+  button off screen. `scroll_into_view_if_needed()` first.
 - **Break loops on an element, not on page text.** A wait-for-the-round-to-end loop
   keyed on the word "draw" exited immediately, because the help text says "draw a
   trail". Waiting for the Rematch *button* is unambiguous.

@@ -97,6 +97,37 @@ t("the old continue event does nothing", a.game()?.round === roundBefore,
   `${roundBefore} -> ${a.game()?.round}`);
 t("and doesn't break the phase", a.game()?.phase === "submitting", String(a.game()?.phase));
 
+// ---------- the SERVER's normaliser must not stem either ----------
+// server.js keeps its own copy of the rules (it loads outside the webpack build),
+// so removing the stemmer from logic.ts alone would leave the two disagreeing:
+// clients would think a word was legal while the server rejected it as a repeat.
+{
+  const before = a.game()?.round;
+  // "ANCHOR" is already on screen and therefore banned. Its plural is a DIFFERENT
+  // word now, so the server must accept it.
+  a.errors.length = 0;
+  a.s.emit("game_event", { event: "submit", data: { word: "anchors" } });
+  await wait(500);
+  t("the server accepts a plural of a used word",
+    a.errors.length === 0 && (a.game()?.submitted ?? []).includes(a.joined.userId),
+    JSON.stringify(a.errors));
+
+  // ...while the exact word, differing only in case, is still a repeat.
+  b.errors.length = 0;
+  b.s.emit("game_event", { event: "submit", data: { word: "ANCHOR" } });
+  await wait(500);
+  t("but rejects the same word in another case",
+    b.errors.some((e) => /already used/i.test(e.message ?? "")), JSON.stringify(b.errors));
+  t("and the round did not resolve off a rejected word", a.game()?.round === before,
+    `${before} -> ${a.game()?.round}`);
+
+  // Let this round finish so the next block starts from a clean submitting phase.
+  b.s.emit("game_event", { event: "submit", data: { word: "sextant" } });
+  await wait(800);
+  t("the round completed once a legal word arrived", a.game()?.round === before + 1,
+    `${before} -> ${a.game()?.round}`);
+}
+
 // ---------- agreement still wins, and records shared authorship ----------
 a.s.emit("game_event", { event: "submit", data: { word: "harbour" } });
 await wait(350);

@@ -122,29 +122,26 @@ export interface CodenamesState {
 }
 
 /**
- * Normalising is what makes "boiling", "BOIL " and "boil" count as agreement.
- * Deliberately conservative: casing, whitespace, punctuation, and a couple of
- * plural/gerund endings. It does NOT stem aggressively — turning "running" into
- * "run" would also collapse words players consider distinct.
+ * Normalising is what makes "BOIL " and "boil" count as agreement.
+ *
+ * Casing, whitespace, punctuation and accents only. It deliberately does NOT
+ * stem: an earlier version collapsed -ing/-ies/-es/-s, which was wrong in both
+ * directions. It merged words players consider distinct ("string" -> "str",
+ * "spring" -> "spr", "bring" -> "br"), and because unrelated words can stem
+ * alike it also declared agreement nobody had actually reached. The -es rule
+ * alone had to be fixed twice — plain /ses$/ turned "horses" into "hors", so it
+ * stopped matching its own singular.
+ *
+ * A crude stemmer guessing at English morphology is worse than no stemmer: two
+ * players only match on the word they actually typed. The NFKD pass stays, since
+ * that is what stops homoglyph and zero-width tricks.
  */
 export function normalizeWord(raw: string): string {
-  let w = raw
+  return raw
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[^a-z]/g, "");
-  if (w.length > 4) {
-    if (w.endsWith("ing")) w = w.slice(0, -3);
-    else if (w.endsWith("ies")) w = w.slice(0, -3) + "y";
-    // Strip a full "-es" only after a real sibilant cluster, where it forms its
-    // own syllable (dishes -> dish, boxes -> box). Note "ss" and not a bare "s":
-    // matching plain /ses$/ turns horses into "hors" and kettles into "kettl",
-    // so neither matches its own singular. That was a real bug; the two-client
-    // test caught it after the unit tests missed it.
-    else if (/(?:ss|x|z|ch|sh)es$/.test(w)) w = w.slice(0, -2);
-    else if (w.endsWith("s") && !w.endsWith("ss")) w = w.slice(0, -1);
-  }
-  return w;
 }
 
 /**

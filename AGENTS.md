@@ -194,7 +194,7 @@ on a clock that is actively draining).
 Layer the tests. Each caught bugs the layer below could not:
 
 - **unit** — rules. Caught Snake's tail-tip collision and Codenames' `-es` plural
-  bug.
+  bug (the stemmer that caused it is now gone — see below).
 - **socket** — wiring. Caught a duel whose tick loop never started, and a drain
   that ENDED the game it was meant to preserve.
 - **browser** — the DOM. Caught a canvas that was silently 300x150, and a paused
@@ -253,6 +253,12 @@ Adding one:
   needs a stable anon id; generating one per `join_room` seats the same browser
   as several players and the room waits forever on people who don't exist. This
   was a real bug — the browser test caught it after the protocol test didn't.
+- **Don't guess at English morphology.** Codenames matches on the word players
+  actually typed: casing, padding, punctuation and accents are folded, nothing is
+  stemmed. A suffix stripper looked helpful and was wrong both ways — it merged
+  distinct words (`string` -> `str`) and let unrelated words stem alike into an
+  agreement nobody reached. The `-es` rule alone needed fixing twice. Keep the
+  NFKD pass, though: that is what blocks homoglyph and zero-width tricks.
 - **Session wins belong to the ROOM, not the game.** `rooms.js` counts them off
   `state.winner`, so a game needs no tally of its own and switching games can't
   reset the score. Set `state.winner` to a userId and it's counted; a game that

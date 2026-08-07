@@ -24,20 +24,32 @@ const seeded = () => 0; // always the first starting pair
 t("case insensitive", normalizeWord("BOIL") === normalizeWord("boil"));
 t("trims whitespace", normalizeWord("  boil  ") === "boil");
 t("strips punctuation", normalizeWord("boil!") === "boil");
-t("gerund collapses", normalizeWord("boiling") === normalizeWord("boil"));
-t("plural collapses", normalizeWord("showers") === normalizeWord("shower"));
-t("-ies plural", normalizeWord("berries") === normalizeWord("berry"));
-t("-es plural after sibilant", normalizeWord("dishes") === normalizeWord("dish"));
-// Regression: an unconditional "-es" strip turned these into "kettl"/"hors",
-// so a player typing the plural never matched someone typing the singular.
-t("kettles matches kettle", normalizeWord("kettles") === normalizeWord("kettle"), normalizeWord("kettles"));
-t("horses matches horse", normalizeWord("horses") === normalizeWord("horse"), normalizeWord("horses"));
-t("candles matches candle", normalizeWord("candles") === normalizeWord("candle"));
-t("boxes matches box", normalizeWord("boxes") === normalizeWord("box"));
-t("churches matches church", normalizeWord("churches") === normalizeWord("church"));
-t("glasses matches glass", normalizeWord("glasses") === normalizeWord("glass"));
+// Endings are NOT stemmed. A crude stemmer was wrong both ways: it merged words
+// players consider distinct, and let unrelated words that happen to stem alike
+// register as agreement nobody reached. You match on what you actually typed.
+t("gerund is its own word", normalizeWord("boiling") !== normalizeWord("boil"));
+t("plural is its own word", normalizeWord("showers") !== normalizeWord("shower"));
+t("-ies is not folded", normalizeWord("berries") !== normalizeWord("berry"));
+t("-es is not folded", normalizeWord("dishes") !== normalizeWord("dish"));
+// Nothing is truncated any more, so the class of bug that produced "hors" and
+// "kettl" cannot recur — each word normalises to its own letters.
+t("kettles stays kettles", normalizeWord("kettles") === "kettles", normalizeWord("kettles"));
+t("horses stays horses", normalizeWord("horses") === "horses", normalizeWord("horses"));
+t("boxes stays boxes", normalizeWord("boxes") === "boxes", normalizeWord("boxes"));
+t("churches stays churches", normalizeWord("churches") === "churches");
+t("glasses stays glasses", normalizeWord("glasses") === "glasses");
+// The words the old stemmer mangled worst: these lost their meaning entirely.
+t("string is not str", normalizeWord("string") === "string", normalizeWord("string"));
+t("spring is not spr", normalizeWord("spring") === "spring", normalizeWord("spring"));
+t("bring is not br", normalizeWord("bring") === "bring", normalizeWord("bring"));
+// And the false agreement it created: two unrelated words stemming to the same
+// thing used to count as the whole group converging.
+t("ceiling and ceil are different words",
+  normalizeWord("ceiling") !== normalizeWord("ceil"));
+t("but casing and spacing still agree",
+  normalizeWord("  Ceiling ") === normalizeWord("CEILING"));
 t("accents folded", normalizeWord("café") === "cafe");
-t("short words untouched", normalizeWord("gas") === "gas");
+t("short words unchanged", normalizeWord("gas") === "gas");
 t("double-s kept", normalizeWord("glass") === "glass", normalizeWord("glass"));
 t("digits dropped", normalizeWord("b0il") === "bil");
 t("empty on symbols only", normalizeWord("!!!") === "");
@@ -59,8 +71,8 @@ t("rejects overlong", submitWord(s, "u1", "x".repeat(MAX_WORD_LENGTH + 1)).error
 t("rejects a word already on screen", submitWord(s, "u1", s.words[0]).error !== undefined);
 t("accepts a fresh word", submitWord(s, "u1", "kettle").error === undefined);
 
-// submissions are stored normalised
-s = submitWord(s, "u1", "Boiling").state;
+// submissions are stored normalised (casing and padding, not stemmed)
+s = submitWord(s, "u1", "  Boil ").state;
 t("stored normalised", s.submissions["u1"] === "boil", s.submissions["u1"]);
 
 // --- waiting logic ---
@@ -81,13 +93,17 @@ t("both words now banned", next.used.includes("boil") && next.used.includes("sho
 t("the next round is already open", next.phase === "submitting");
 
 // used words can't be replayed — Petisomon's rule
-t("cannot reuse a previous word", submitWord(next, "u1", "boiling").error !== undefined);
-t("cannot reuse across rounds either", submitWord(next, "u2", "showers").error !== undefined);
+t("cannot reuse a previous word", submitWord(next, "u1", "BOIL").error !== undefined);
+t("nor with different padding", submitWord(next, "u2", " shower ").error !== undefined);
+// The flip side of dropping the stemmer: the plural IS a different word now, so
+// it is a legal submission rather than a blocked repeat.
+t("but the plural is a different, allowed word",
+  submitWord(next, "u2", "showers").error === undefined);
 
 // --- agreement wins ---
 let win = submitWord(next, "u1", "steam").state;
-win = submitWord(win, "u2", "STEAMING").state; // normalises to the same word
-t("different spellings agree", win.submissions["u1"] === win.submissions["u2"]);
+win = submitWord(win, "u2", " STEAM ").state; // same word, different casing/padding
+t("casing and padding still agree", win.submissions["u1"] === win.submissions["u2"]);
 win = resolveRound(win, ["u1", "u2"]);
 t("agreement -> won", win.phase === "won");
 t("winning word recorded", win.winningWord === "STEAM", String(win.winningWord));
@@ -108,7 +124,7 @@ t("all three words banned", ["alpha", "bravo", "charlie"].every((w) => r3.used.i
 let allAgree = startGame(createState(seeded));
 allAgree = submitWord(allAgree, "a", "delta").state;
 allAgree = submitWord(allAgree, "b", "delta").state;
-allAgree = submitWord(allAgree, "c", "Deltas").state;
+allAgree = submitWord(allAgree, "c", "Delta").state;
 t("unanimous with 3 wins", resolveRound(allAgree, ["a", "b", "c"]).phase === "won");
 
 // --- guards ---
@@ -257,7 +273,7 @@ t("a player who didn't answer is omitted", !("c" in partial), JSON.stringify(par
 // Normalised words count as the same answer.
 let syncState = startGame(createState(Math.random, 3));
 syncState = submitWord(syncState, "a", "steam").state;
-syncState = submitWord(syncState, "b", "STEAMING").state;
+syncState = submitWord(syncState, "b", "STEAM").state;
 syncState = submitWord(syncState, "c", "frost").state;
 const syncRes = resolveRound(syncState, ["a", "b", "c"]);
 t("different spellings still count as sync",

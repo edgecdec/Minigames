@@ -34,23 +34,27 @@ function drawStartingWords(count) {
 
 const MAX_WORD_LENGTH = 24;
 
+/**
+ * Normalising is what makes "BOIL " and "boil" count as agreement.
+ *
+ * Casing, whitespace, punctuation and accents only. It deliberately does NOT
+ * stem: an earlier version collapsed -ing/-ies/-es/-s, which was wrong in both
+ * directions. It merged words players consider distinct ("string" -> "str",
+ * "spring" -> "spr", "bring" -> "br"), and because unrelated words can stem
+ * alike it also declared agreement nobody had actually reached. The -es rule
+ * alone had to be fixed twice — plain /ses$/ turned "horses" into "hors", so it
+ * stopped matching its own singular.
+ *
+ * A crude stemmer guessing at English morphology is worse than no stemmer: two
+ * players only match on the word they actually typed. The NFKD pass stays, since
+ * that is what stops homoglyph and zero-width tricks.
+ */
 function normalizeWord(raw) {
-  let w = String(raw)
+  return String(raw)
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[^a-z]/g, "");
-  if (w.length > 4) {
-    if (w.endsWith("ing")) w = w.slice(0, -3);
-    else if (w.endsWith("ies")) w = w.slice(0, -3) + "y";
-    // Only strip a full "-es" after a sibilant, where it's a real syllable
-    // (dishes -> dish). Stripping every "-es" turns horses into "hors" and
-    // kettles into "kettl", so they stop matching their own singular.
-    // Mirrors logic.ts — keep the two identical.
-    else if (/(?:ss|x|z|ch|sh)es$/.test(w)) w = w.slice(0, -2);
-    else if (w.endsWith("s") && !w.endsWith("ss")) w = w.slice(0, -1);
-  }
-  return w;
 }
 
 /**

@@ -8,8 +8,9 @@ const { io } = await import(
 );
 import crypto from "node:crypto";
 
+// BASE points the suite at a deployment; PORT is the local fallback.
 const PORT = process.env.PORT || "3070";
-const URL = `http://localhost:${PORT}`;
+const URL = process.env.BASE || `http://localhost:${PORT}`;
 const SECRET = "localtestsecret";
 let pass = 0, fail = 0;
 const t = (n, c, x = "") => { c ? pass++ : (fail++, console.log("FAIL:", n, x)); };
@@ -27,6 +28,10 @@ function client(u) {
   s.on("joined", (j) => { c.joined = j; });
   c.last = () => c.states[c.states.length - 1];
   c.game = () => c.last()?.gameState;
+  // The id the SERVER assigned. Our signed cookie is only honoured when
+  // SESSION_SECRET matches, so against a deployment `uid` is not what the room
+  // knows us as — always compare against this.
+  Object.defineProperty(c, "id", { get: () => c.joined?.userId ?? c.uid });
   return c;
 }
 const clockOf = (g, id) => g.players.find((p) => p.userId === id)?.ms;
@@ -61,7 +66,7 @@ t("first rotation not yet done", g.firstRotationDone === false, String(g.firstRo
 
 // ---------- a wrong answer keeps the turn and costs clock ----------
 const holder = g.turnUserId;
-const actor = cs.find((c) => c.uid === holder);
+const actor = cs.find((c) => c.id === holder);
 const beforeMiss = clockOf(g, holder);
 const oppBefore = g.players.filter((p) => p.userId !== holder).map((p) => ({ u: p.userId, ms: p.ms }));
 
@@ -91,21 +96,21 @@ t("spam is all counted", g.wrongThisTurn === 4, String(g.wrongThisTurn));
 // Solve slowly so there is a big share to hand out; capped players must not
 // exceed the 30s start while the first lap is unfinished.
 g = cs[0].game();
-const solver = cs.find((c) => c.uid === g.turnUserId);
+const solver = cs.find((c) => c.id === g.turnUserId);
 await wait(2200);
 solver.s.emit("game_event", { event: "answer", data: { value: g.prompt * g.settings.multiplier } });
 await wait(700);
 g = cs[0].game();
 t("nobody exceeds the start during the first lap",
   g.players.every((p) => p.ms <= 30_050), JSON.stringify(g.players.map((p) => Math.round(p.ms))));
-t("turn advanced after a correct answer", g.turnUserId !== solver.uid);
+t("turn advanced after a correct answer", g.turnUserId !== solver.id);
 t("turnsTaken counted", g.turnsTaken >= 1, String(g.turnsTaken));
 
 // Finish the lap.
 for (let i = 0; i < 3; i++) {
   g = cs[0].game();
   if (g.phase !== "playing") break;
-  const who = cs.find((c) => c.uid === g.turnUserId);
+  const who = cs.find((c) => c.id === g.turnUserId);
   if (!who) break;
   await wait(1800);
   who.s.emit("game_event", { event: "answer", data: { value: g.prompt * g.settings.multiplier } });
@@ -117,9 +122,9 @@ t("first rotation completes", g.firstRotationDone === true, String(g.firstRotati
 
 // Past the lap a slow answer may now push someone above the start.
 const preLift = cs[0].game();
-const lifter = cs.find((c) => c.uid === preLift.turnUserId);
+const lifter = cs.find((c) => c.id === preLift.turnUserId);
 if (lifter && preLift.phase === "playing") {
-  const others = preLift.players.filter((p) => p.userId !== lifter.uid).map((p) => ({ u: p.userId, ms: p.ms }));
+  const others = preLift.players.filter((p) => p.userId !== lifter.id).map((p) => ({ u: p.userId, ms: p.ms }));
   await wait(2500);
   lifter.s.emit("game_event", { event: "answer", data: { value: preLift.prompt * preLift.settings.multiplier } });
   await wait(700);

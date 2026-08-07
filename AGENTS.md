@@ -274,6 +274,16 @@ Adding one:
   distinct words (`string` -> `str`) and let unrelated words stem alike into an
   agreement nobody reached. The `-es` rule alone needed fixing twice. Keep the
   NFKD pass, though: that is what blocks homoglyph and zero-width tricks.
+- **Never replay `"NEW"` on a reconnect.** A host joins with `roomCode: "NEW"`,
+  which means "create me a room". `useRoom` used to store that verbatim and replay
+  it after a drop, so every deploy dropped the host into a FRESH empty lobby while
+  everyone else rejoined the original — the host looked kicked out of their own
+  room. The real code arrives in the `joined` payload; pin it there.
+- **A room is worth saving if it has PEOPLE, not a game.** `saveRooms` required
+  `gameSlug && state`, so a room sitting in the game picker was discarded by every
+  deploy. Between games is where a lobby spends most of its life. A restored
+  lobby-only room must NOT come back paused — there is nothing to resume, and the
+  banner would block the host from picking a game.
 - **Session wins belong to the ROOM, not the game.** `rooms.js` counts them off
   `state.winner`, so a game needs no tally of its own and switching games can't
   reset the score. Set `state.winner` to a userId and it's counted; a game that

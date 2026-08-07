@@ -116,8 +116,16 @@ function saveRooms(rooms, dbOptions = {}) {
       }
     });
 
+    // Save any room that still has PEOPLE in it — a game in progress is not the
+    // only thing worth preserving.
+    //
+    // This used to require `gameSlug && state`, which meant a room sitting in the
+    // game picker was silently thrown away by every deploy. The host and everyone
+    // else got "No room called ABCD" on reconnect, which reads as if they mistyped
+    // it. Between games is where a lobby spends most of its life, so in practice
+    // this was the common case rather than an edge one.
     const worth = Array.from(rooms.entries()).filter(
-      ([, room]) => room.gameSlug && room.state,
+      ([, room]) => room.players && room.players.size > 0,
     );
     run(worth);
     return { saved: worth.length };
@@ -178,16 +186,19 @@ function loadRooms(rooms, createRoom, dbOptions = {}) {
       // disconnected right now, and the normal 60s window would delete it before
       // they finish coming back.
       room.restored = true;
-      room.gameSlug = row.game_slug;
-      room.state = payload.state;
-      // ALWAYS paused, whatever the snapshot said. A room restored mid-turn with
-      // its timers gone would have a clock that never ticks and a turn nobody
-      // can end.
-      room.paused = payload.paused || {
-        by: null,
-        reason: "restart",
-        at: now,
-      };
+      room.gameSlug = row.game_slug || null;
+      room.state = payload.state || null;
+      // A room with a game comes back ALWAYS paused, whatever the snapshot said:
+      // restored mid-turn with its timers gone, it would have a clock that never
+      // ticks and a turn nobody can end.
+      //
+      // A lobby-only room has nothing to pause, and marking it paused would show
+      // a "paused by the server" banner with no Resume that makes sense — the host
+      // could not pick a game without first resuming a game that doesn't exist.
+      room.paused =
+        room.gameSlug && room.state
+          ? payload.paused || { by: null, reason: "restart", at: now }
+          : null;
       room.wins = payload.wins || {};
       // Preserved so the restored game's already-counted winner isn't counted a
       // second time when the room resumes and broadcasts again.

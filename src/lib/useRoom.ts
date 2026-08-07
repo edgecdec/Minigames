@@ -90,6 +90,16 @@ export function useRoom() {
     s.on("disconnect", () => setStatus((cur) => (cur === "joined" ? "connecting" : cur)));
     s.on("joined", (payload: { roomCode: string; userId: string }) => {
       hasJoinedOnce.current = true;
+      // Pin the REAL room code for any future re-join.
+      //
+      // A host joins with "NEW", which means "create me a room". Leaving that in
+      // `lastJoin` meant every reconnect asked for a NEW room again, so after a
+      // deploy the host silently landed in a fresh empty lobby while everyone else
+      // rejoined the original — the host appeared to be kicked out of their own
+      // room. Only the server knows the code, so this is the moment to record it.
+      if (lastJoin.current) {
+        lastJoin.current = { ...lastJoin.current, roomCode: payload.roomCode };
+      }
       setUserId(payload.userId);
       setStatus("joined");
       setError(null);

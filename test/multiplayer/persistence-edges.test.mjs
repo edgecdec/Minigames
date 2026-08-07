@@ -99,21 +99,74 @@ function readDb(sql) {
   return new Promise((res) => r.once("exit", () => res(out.trim())));
 }
 
-// ---------- 1. A lobby-only room is NOT snapshotted ----------
+// ---------- 1. A lobby-only room IS snapshotted ----------
+//
+// It used not to be: `saveRooms` required `gameSlug && state`, so a room sitting
+// in the game picker was thrown away by every deploy and everyone — the host
+// included — got "No room called ABCD" on reconnect. Between games is where a
+// lobby spends most of its life, so that was the common case, not an edge one.
 console.log("=== 1. lobby-only room ===");
 wipeDb();
 await start("lobby");
 {
-  const a = client(crypto.randomUUID());
+  const H = crypto.randomUUID(), G = crypto.randomUUID();
+  const a = client(H), b = client(G);
   await wait(800);
   a.s.emit("join_room", { roomCode: "NEW", name: "Ana" });
   await wait(600);
-  t("lobby room created", !!a.joined?.roomCode);
-  // No game selected at all.
+  const code = a.joined?.roomCode;
+  b.s.emit("join_room", { roomCode: code, name: "Ben" });
+  await wait(600);
+  t("lobby room created", !!code);
+  t("two players in it", a.last()?.players?.length === 2);
+  const hostBefore = a.last()?.hostId;
+
+  // No game selected at all. Stay connected: a real deploy kills the server.
   await stop();
-  const rows = await readDb("SELECT code FROM room_snapshots");
-  t("a room with no game is not saved", rows === "[]", rows);
-  a.s.disconnect();
+  const rows = await readDb("SELECT code, game_slug FROM room_snapshots");
+  t("a room with people in it IS saved, game or not", rows.includes(code), rows);
+  t("and its game_slug is null", /"game_slug":null/.test(rows), rows);
+
+  await start("lobby2");
+  await wait(2500);
+  [a, b].forEach((c) => { if (!c.s.connected) c.s.connect(); });
+  await wait(1200);
+  // Clear accumulated state: last() would otherwise return a PRE-restart snapshot
+  // and a room that no longer exists would still look present.
+  a.errors.length = 0; a.states.length = 0; b.states.length = 0;
+  a.s.emit("join_room", { roomCode: code, name: "Ana" });
+  await wait(1800);
+
+  // The host's re-join must ask for the REAL code, not "NEW".
+  //
+  // The client stores whatever it first joined with, and a host joins with "NEW"
+  // meaning "create me a room". Replaying that on reconnect created a FRESH empty
+  // lobby, so after a deploy the host silently sat alone in a new room while
+  // everyone else rejoined the original — the host looked kicked from their own
+  // room. `useRoom` now overwrites the stored code from the `joined` payload.
+  t("re-joining with the real code returns the SAME room", a.joined?.roomCode === code,
+    `${code} -> ${a.joined?.roomCode}`);
+
+  t("the lobby survived the restart", a.last()?.roomCode === code,
+    JSON.stringify(a.errors.map((e) => e.message)));
+  t("THE HOST WAS NOT KICKED", a.last()?.hostId === hostBefore,
+    `${hostBefore?.slice(0, 8)} -> ${a.last()?.hostId?.slice(0, 8)}`);
+  t("and is still told they are host", a.joined?.isHost === true, String(a.joined?.isHost));
+  t("both players came back", a.last()?.players?.length === 2,
+    JSON.stringify(a.last()?.players?.map((p) => p.name)));
+  // Nothing to pause, so no banner — the host must be able to pick a game
+  // immediately rather than resume a game that doesn't exist.
+  t("a lobby-only room is NOT restored paused", !a.last()?.paused,
+    JSON.stringify(a.last()?.paused));
+  t("and no game is selected", a.last()?.game == null, String(a.last()?.game));
+
+  // It must be immediately usable: the host can start a game with no Resume first.
+  a.s.emit("select_game", { game: "codenames" });
+  await wait(700);
+  t("the host can pick a game straight away", a.last()?.game === "codenames",
+    String(a.last()?.game));
+  a.s.disconnect(); b.s.disconnect();
+  await stop();
 }
 
 // ---------- 2. A FINISHED game is restored, but as finished ----------

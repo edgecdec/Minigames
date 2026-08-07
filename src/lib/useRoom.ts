@@ -119,11 +119,23 @@ export function useRoom() {
 
   /** `roomCode` omitted or "NEW" creates a fresh room. */
   const join = useCallback(
-    (roomCode: string, name: string) => {
+    async (roomCode: string, name: string) => {
       const payload = { roomCode: roomCode || "NEW", name };
       lastJoin.current = payload;
       setStatus("connecting");
       setError(null);
+
+      // Make sure this browser holds a durable signed id BEFORE the socket opens.
+      // A websocket handshake can't set a cookie, so without this a visitor who
+      // never submitted a score got a per-socket throwaway id — and opening the
+      // invite link twice in one browser seated them as two separate players.
+      try {
+        await fetch("/api/identity", { method: "POST" });
+      } catch {
+        // Not fatal: they can still play, just as a throwaway identity. Better
+        // than refusing to join because one request failed.
+      }
+
       ensureSocket().emit("join_room", payload);
     },
     [ensureSocket],

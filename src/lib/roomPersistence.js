@@ -65,6 +65,10 @@ function serializeRoom(room) {
     })),
     state: room.state ? stateWithoutTimer : null,
     paused: room.paused,
+    // The session scoreboard. Without this a deploy silently reset everyone's
+    // wins — the exact thing persistence exists to prevent.
+    wins: room.wins || {},
+    countedWinner: room.countedWinner || null,
   };
 }
 
@@ -184,6 +188,10 @@ function loadRooms(rooms, createRoom, dbOptions = {}) {
         reason: "restart",
         at: now,
       };
+      room.wins = payload.wins || {};
+      // Preserved so the restored game's already-counted winner isn't counted a
+      // second time when the room resumes and broadcasts again.
+      room.countedWinner = payload.countedWinner || null;
       (payload.players || []).forEach((p) => {
         room.players.set(p.id, { id: p.id, name: p.name, connected: false });
       });

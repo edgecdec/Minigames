@@ -143,6 +143,24 @@ function listGames() {
   return Array.from(games.keys());
 }
 
+/**
+ * Drop one socket from a seat's count and return how many are left.
+ *
+ * Never goes negative: a snapshot restored from the database has no counts at
+ * all, so the first disconnect after a restart would otherwise underflow and the
+ * seat would look permanently occupied.
+ */
+function decSocket(room, userId) {
+  if (!room || !room.sockets || !userId) return 0;
+  const left = (room.sockets.get(userId) || 0) - 1;
+  if (left > 0) {
+    room.sockets.set(userId, left);
+    return left;
+  }
+  room.sockets.delete(userId);
+  return 0;
+}
+
 function createRoom(code, hostId) {
   const room = {
     code,
@@ -164,8 +182,8 @@ function createRoom(code, hostId) {
      * Session-long wins per player, across EVERY game played in this room.
      *
      * Lives here rather than in game state because game state is thrown away on
-     * a switch, which used to reset the scoreboard. Games still keep their own
-     * tally for the current game; absorbWins() folds it in here.
+     * a switch, which used to reset the scoreboard. absorbWins() counts these off
+     * `state.winner`, so a game needs no tally of its own.
      */
     wins: {},
     /**
@@ -176,6 +194,14 @@ function createRoom(code, hostId) {
      */
     countedWinner: null,
     players: new Map(),
+    /**
+     * Live socket count per userId — NOT persisted.
+     *
+     * One browser can hold several sockets for the same seat (a second tab, or a
+     * reconnect racing the old socket's close). Without counting, closing one tab
+     * marked the player away while they were still sat there playing in another.
+     */
+    sockets: new Map(),
     /** null until the host picks one. */
     gameSlug: null,
     state: null,
@@ -339,6 +365,9 @@ function attach(io, { verifyIdentity }) {
      */
     const anonId = `anon-${crypto.randomUUID()}`;
 
+    /** Which seat this socket has been counted against, so it counts exactly once. */
+    let countedFor = null;
+
     function ctx(room) {
       return {
         room,
@@ -385,6 +414,15 @@ function attach(io, { verifyIdentity }) {
       currentCode = code;
       socket.join(code);
       room.emptySince = null;
+
+      // Count this socket against the seat. Re-joining on the SAME socket (the
+      // automatic re-join after a reconnect) must not count twice, so track which
+      // seat this socket is already counted against.
+      if (countedFor !== userId) {
+        if (countedFor) decSocket(room, countedFor);
+        room.sockets.set(userId, (room.sockets.get(userId) || 0) + 1);
+        countedFor = userId;
+      }
 
       const existing = room.players.get(userId);
       if (existing) {
@@ -545,12 +583,22 @@ function attach(io, { verifyIdentity }) {
       currentCode = null;
       if (!room) return;
 
+      const remaining = decSocket(room, userId);
+      countedFor = null;
+
       const player = room.players.get(userId);
       if (player) {
         if (explicit) {
           // Leaving on purpose gives up the seat; a dropped connection keeps it
           // so a refresh or a network blip doesn't lose your game.
           room.players.delete(userId);
+          room.sockets.delete(userId);
+        } else if (remaining > 0) {
+          // Another tab of the same browser is still connected. Marking them away
+          // — or forfeiting their game below — would punish closing a duplicate
+          // tab. Nothing to broadcast either; the seat is unchanged.
+          socket.leave(code);
+          return;
         } else {
           player.connected = false;
         }

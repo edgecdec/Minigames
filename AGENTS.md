@@ -240,6 +240,15 @@ Adding one:
   pm2 in fork mode. Scaling out means moving live state out of process first.
 - **Never trust a client-sent user id.** Identity comes from the signed cookie on
   the socket handshake. A client-supplied id would let anyone claim the host seat.
+- **Identity must exist BEFORE the socket opens.** The client calls
+  `POST /api/identity` first, because a websocket handshake can't set a cookie.
+  Skipping it meant anyone who had never submitted a score fell back to a
+  per-socket throwaway id, so one browser opening the invite link twice was two
+  players. Anything that connects without minting first reintroduces this.
+- **Count sockets per seat, not seats per socket.** One browser legitimately holds
+  several sockets for one player (a second tab, a reconnect racing the old close).
+  `room.sockets` tracks the count so only the LAST one closing marks them away —
+  otherwise closing a duplicate tab forfeited a game they were still playing.
 - **Mint a fallback id once per socket, not per join.** A visitor with no cookie
   needs a stable anon id; generating one per `join_room` seats the same browser
   as several players and the room waits forever on people who don't exist. This

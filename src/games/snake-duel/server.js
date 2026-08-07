@@ -14,6 +14,8 @@
 const COLS = 24;
 const ROWS = 24;
 const TICK_MS = 160;
+/** Wall-clock length of each countdown number, so 3-2-1 takes ~3 real seconds. */
+const COUNTDOWN_STEP_MS = 1000;
 const FOOD_COUNT = 3;
 const MAX_TICKS = 3000;
 const MAX_PLAYERS = 8;
@@ -133,10 +135,15 @@ function createDuel(userIds, wins, phase) {
     tick: 0,
     winner: null,
     countdown: 3,
+    /** Set when the countdown begins; the remaining number is derived from it. */
+    countdownStartedAt: null,
     wins: wins || {},
     /** Handle for the tick interval. Never sent to a client. */
     timer: null,
   };
+  // Stamp the countdown start here: createDuel is the only path into the
+  // countdown phase, and the remaining number is derived from this timestamp.
+  if (state.phase === "countdown") state.countdownStartedAt = Date.now();
   state.food = placeFood(occupied(state), FOOD_COUNT);
   return state;
 }
@@ -188,8 +195,12 @@ function resolveOutcome(state) {
 /** Advance one tick, mutating in place — this runs on a timer, not per event. */
 function step(state) {
   if (state.phase === "countdown") {
-    state.countdown -= 1;
-    if (state.countdown <= 0) {
+    // Derived from a timestamp, NOT decremented per tick. The board ticks every
+    // 160ms, so counting down one per tick made 3-2-1 take about half a second.
+    const elapsed = Date.now() - (state.countdownStartedAt || Date.now());
+    const remaining = Math.max(0, 3 - Math.floor(elapsed / COUNTDOWN_STEP_MS));
+    state.countdown = remaining;
+    if (remaining <= 0) {
       state.phase = "playing";
       state.countdown = 0;
     }

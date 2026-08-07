@@ -7,7 +7,9 @@ const { io } = await import(
   path.join(REPO_ROOT, "node_modules/socket.io-client/build/esm/index.js")
 );
 
-const URL = process.env.BASE || "http://localhost:3050";
+// Accept PORT like the sibling suites do. Reading only BASE meant a PORT=... run
+// silently pointed at the default and every assertion failed on a null join.
+const URL = process.env.BASE || `http://localhost:${process.env.PORT || "3050"}`;
 let pass = 0, fail = 0;
 const t = (n, c, x = "") => { c ? pass++ : (fail++, console.log("FAIL:", n, x)); };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -120,7 +122,11 @@ await wait(400);
 sn[0].s.emit("select_game", { game: "snake-duel" });
 await wait(400);
 sn[0].s.emit("game_event", { event: "start" });
-await wait(1200);
+// Past the 3-2-1 countdown, not just past the first tick. This waited 1200ms back
+// when the countdown ran at tick speed (~0.5s); once it was fixed to real seconds
+// that landed mid-countdown, where tick is legitimately still 0.
+await wait(4200);
+t("snake finished counting down", sn[0].game()?.phase === "playing", String(sn[0].game()?.phase));
 t("snake running", (sn[0].game()?.tick ?? 0) > 0, String(sn[0].game()?.tick));
 
 sn[0].s.emit("pause_game");

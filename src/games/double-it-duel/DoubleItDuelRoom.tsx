@@ -11,7 +11,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import PlayerList from "@/components/multiplayer/PlayerList";
 import SettingsPanel from "@/components/multiplayer/SettingsPanel";
-import type { RoomPlayer } from "@/lib/useRoom";
+import type { RoomGameProps } from "@/lib/useRoom";
 
 /** Mirrors publicState() in ./server.js. */
 export interface DuelPublicState {
@@ -62,13 +62,8 @@ export default function DoubleItDuelRoom({
   userId,
   isHost,
   send,
-}: {
-  state: DuelPublicState;
-  players: RoomPlayer[];
-  userId: string;
-  isHost: boolean;
-  send: (event: string, data?: unknown) => void;
-}) {
+  roomWins,
+}: RoomGameProps<DuelPublicState>) {
   const [answer, setAnswer] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -324,7 +319,7 @@ export default function DoubleItDuelRoom({
         </Stack>
       ) : null}
 
-      <PlayerList players={players} userId={userId} />
+      <PlayerList players={players} userId={userId} wins={roomWins} />
     </Stack>
   );
 }

@@ -160,6 +160,21 @@ function createRoom(code, hostId) {
      * Buys a longer sweep grace period; cleared once anyone returns.
      */
     restored: false,
+    /**
+     * Session-long wins per player, across EVERY game played in this room.
+     *
+     * Lives here rather than in game state because game state is thrown away on
+     * a switch, which used to reset the scoreboard. Games still keep their own
+     * tally for the current game; absorbWins() folds it in here.
+     */
+    wins: {},
+    /**
+     * The winner already counted for the CURRENT game state.
+     *
+     * Cleared whenever a new game starts, so back-to-back wins by the same
+     * player each count — while repeated broadcasts of one finished game do not.
+     */
+    countedWinner: null,
     players: new Map(),
     /** null until the host picks one. */
     gameSlug: null,
@@ -173,6 +188,9 @@ function createRoom(code, hostId) {
 
 /** Membership plus whatever the chosen game chose to expose. */
 function publicState(room) {
+  // Keep the room total current: a game can end on a timer with no event of its
+  // own, so there is no single hook that reliably fires on every win.
+  absorbWins(room);
   const handlers = room.gameSlug ? games.get(room.gameSlug) : null;
   const players = Array.from(room.players.values()).map((p) => ({
     id: p.id,
@@ -185,6 +203,8 @@ function publicState(room) {
     hostId: room.hostId,
     game: room.gameSlug,
     paused: room.paused,
+    /** Wins across every game played in this room, not just the current one. */
+    roomWins: room.wins || {},
     players,
     gameState:
       handlers && room.state
@@ -218,6 +238,27 @@ function sweepRooms() {
       rooms.delete(code);
     }
   }
+}
+
+/**
+ * Count a win onto the room's running total.
+ *
+ * Watches `state.winner` rather than reading a per-game tally: Snake keeps its
+ * own `wins` object, Double It Duel keeps none at all, and Codenames is co-op
+ * with no individual winner. Anything that sets `state.winner` to a userId is
+ * counted, which needs no cooperation from the game.
+ *
+ * `countedWinner` is the guard. A finished game keeps broadcasting with the same
+ * winner set, and this runs on every broadcast, so without it one win would be
+ * counted dozens of times.
+ */
+function absorbWins(room) {
+  const winner = room.state && room.state.winner;
+  if (!winner || typeof winner !== "string") return;
+  if (room.countedWinner === winner) return;
+  room.countedWinner = winner;
+  room.wins = room.wins || {};
+  room.wins[winner] = (room.wins[winner] || 0) + 1;
 }
 
 /**
@@ -378,8 +419,50 @@ function attach(io, { verifyIdentity }) {
         return socket.emit("room_error", { message: "Unknown game" });
       }
       if (room.state && room.state.timer) clearTimeout(room.state.timer);
+      // Bank the outgoing game's result before discarding it.
+      absorbWins(room);
+      room.countedWinner = null;
       room.gameSlug = game;
       room.state = games.get(game).createState(room);
+      broadcast(io, room);
+    });
+
+    /**
+     * Host-only: drop the current game and go back to the picker.
+     *
+     * Distinct from leave_room, which removes YOU from the room. This keeps the
+     * room, its players, its host and its win tally, and only clears the game —
+     * previously the lobby rendered the chosen game forever, so switching from
+     * Snake to anything else meant everyone leaving and re-joining.
+     */
+    socket.on("back_to_lobby", () => {
+      if (!currentCode || !userId) return;
+      const room = rooms.get(currentCode);
+      if (!room) return;
+      if (room.hostId !== userId) {
+        return socket.emit("room_error", { message: "Only the host can change the game" });
+      }
+      if (!room.gameSlug) return;
+
+      // Bank whatever the finished game recorded before discarding its state.
+      absorbWins(room);
+      room.countedWinner = null;
+
+      // Stop the game's timers via its own hook, so nothing keeps ticking against
+      // state we are about to throw away.
+      const handlers = games.get(room.gameSlug);
+      if (handlers && typeof handlers.onPause === "function") {
+        try {
+          handlers.onPause(pauseCtx(room, io));
+        } catch (err) {
+          console.error(`[rooms] ${room.gameSlug} onPause failed on exit:`, err);
+        }
+      }
+      if (room.state && room.state.timer) clearInterval(room.state.timer);
+
+      room.gameSlug = null;
+      room.state = null;
+      room.paused = null;
       broadcast(io, room);
     });
 
@@ -400,9 +483,15 @@ function attach(io, { verifyIdentity }) {
         return;
       }
 
+      const winnerBefore = room.state && room.state.winner;
       try {
         // A game throwing must not kill the connection for everyone else.
         const changed = handlers.onEvent(ctx(room), event, data);
+        // A rematch clears the winner; drop the guard so the next result counts,
+        // including a repeat win by the same player.
+        if (winnerBefore && !(room.state && room.state.winner)) {
+          room.countedWinner = null;
+        }
         if (changed !== false) broadcast(io, room);
       } catch (err) {
         console.error(`[rooms] ${room.gameSlug} event "${event}" failed:`, err);

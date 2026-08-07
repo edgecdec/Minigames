@@ -7,7 +7,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import PlayerList from "@/components/multiplayer/PlayerList";
 import { dirForKey } from "./logic";
-import type { RoomPlayer } from "@/lib/useRoom";
+import type { RoomGameProps } from "@/lib/useRoom";
 
 /** Mirrors publicState() in ./server.js. */
 export interface DuelPublicState {
@@ -60,13 +60,8 @@ export default function SnakeDuelRoom({
   userId,
   isHost,
   send,
-}: {
-  state: DuelPublicState;
-  players: RoomPlayer[];
-  userId: string;
-  isHost: boolean;
-  send: (event: string, data?: unknown) => void;
-}) {
+  roomWins,
+}: RoomGameProps<DuelPublicState>) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cell = BOARD_PX / state.cols;
 
@@ -223,7 +218,8 @@ export default function SnakeDuelRoom({
                 {s.score}
               </Typography>
               <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.6rem" }}>
-                {state.wins[s.userId] ?? 0} won
+                {/* Room total, so switching games doesn't reset it. */}
+                {roomWins?.[s.userId] ?? state.wins[s.userId] ?? 0} won
               </Typography>
             </Box>
           );
@@ -248,7 +244,16 @@ export default function SnakeDuelRoom({
 
       {state.phase === "waiting" ? (
         <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-          Waiting for another player — share the room code above.
+          {/*
+            "waiting" is the pre-start phase, NOT a shortage of players. It used
+            to always claim we were short one, which read as broken with a full
+            room standing there ready to go.
+          */}
+          {state.snakes.length < 2
+            ? "Waiting for another player — share the room code above."
+            : isHost
+              ? "Everyone's here — hit Start when ready."
+              : "Waiting for the host to start…"}
         </Typography>
       ) : null}
 
@@ -298,13 +303,14 @@ export default function SnakeDuelRoom({
         </Stack>
       ) : null}
 
-      {(state.phase === "waiting" || state.phase === "over") && isHost && state.phase === "waiting" ? (
+      {/* Only in "waiting"; the "over" phase renders its own Rematch button. */}
+      {state.phase === "waiting" && isHost ? (
         <Button variant="contained" onClick={() => send("start")}>
           Start
         </Button>
       ) : null}
 
-      <PlayerList players={players} userId={userId} />
+      <PlayerList players={players} userId={userId} wins={roomWins} />
     </Stack>
   );
 }

@@ -11,7 +11,7 @@ import Typography from "@mui/material/Typography";
 import Celebration from "@/components/Celebration";
 import PlayerList from "@/components/multiplayer/PlayerList";
 import { MAX_WORD_LENGTH } from "./logic";
-import type { RoomPlayer } from "@/lib/useRoom";
+import type { RoomGameProps, RoomPlayer } from "@/lib/useRoom";
 
 /** Mirrors publicState() in ./server.js — submissions stay hidden until reveal. */
 export interface CodenamesPublicState {
@@ -192,13 +192,8 @@ export default function CodenamesRoom({
   userId,
   isHost,
   send,
-}: {
-  state: CodenamesPublicState;
-  players: RoomPlayer[];
-  userId: string;
-  isHost: boolean;
-  send: (event: string, data?: unknown) => void;
-}) {
+  roomWins,
+}: RoomGameProps<CodenamesPublicState>) {
   const [word, setWord] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const iSubmitted = state.submitted.includes(userId);

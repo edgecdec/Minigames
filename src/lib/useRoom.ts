@@ -10,6 +10,23 @@ export interface RoomPlayer {
   connected: boolean;
 }
 
+/**
+ * What every multiplayer game component receives.
+ *
+ * Shared so a new game gets the full set — including `roomWins`, which three
+ * separate rooms each had to be told about individually before this existed.
+ * `TState` is the game's own publicState shape.
+ */
+export interface RoomGameProps<TState> {
+  state: TState;
+  players: RoomPlayer[];
+  userId: string;
+  isHost: boolean;
+  send: (event: string, data?: unknown) => void;
+  /** Session wins across every game played in this room, keyed by userId. */
+  roomWins?: Record<string, number>;
+}
+
 export interface RoomPaused {
   /** userId who paused it, or null when the server did. */
   by: string | null;
@@ -20,6 +37,8 @@ export interface RoomPaused {
 export interface RoomState {
   roomCode: string;
   hostId: string;
+  /** Wins across every game played in this room, keyed by userId. */
+  roomWins: Record<string, number>;
   /** Non-null while the game is frozen. */
   paused: RoomPaused | null;
   /** null while the lobby hasn't chosen a game yet. */
@@ -125,6 +144,14 @@ export function useRoom() {
     socketRef.current?.emit("select_game", { game });
   }, []);
 
+  /**
+   * Host-only: drop the current game and go back to the picker, keeping the room
+   * and everyone in it. Distinct from leave(), which removes you entirely.
+   */
+  const backToLobby = useCallback(() => {
+    socketRef.current?.emit("back_to_lobby");
+  }, []);
+
   /** Host-only; the server enforces that too. */
   const pause = useCallback(() => {
     socketRef.current?.emit("pause_game");
@@ -155,6 +182,7 @@ export function useRoom() {
     join,
     leave,
     selectGame,
+    backToLobby,
     pause,
     resume,
     send,

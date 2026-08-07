@@ -7,6 +7,7 @@ import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import ShareIcon from "@mui/icons-material/Share";
 import LinkIcon from "@mui/icons-material/Link";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import Typography from "@mui/material/Typography";
 
 /** Room code with copy-to-clipboard, plus leave. Shared by all lobbies. */
@@ -16,6 +17,8 @@ export default function RoomHeader({
   onLeave,
   onPause,
   canPause,
+  onBackToLobby,
+  canBackToLobby,
 }: {
   roomCode: string;
   connected: boolean;
@@ -23,6 +26,12 @@ export default function RoomHeader({
   /** Host-only pause. Omitted when there's no game running to freeze. */
   onPause?: () => void;
   canPause?: boolean;
+  /**
+   * Host-only: return to the game picker WITHOUT leaving the room. Separate from
+   * onLeave, which drops you out entirely.
+   */
+  onBackToLobby?: () => void;
+  canBackToLobby?: boolean;
 }) {
   const [toast, setToast] = useState<string | null>(null);
 
@@ -148,6 +157,16 @@ export default function RoomHeader({
             {connected ? "● connected" : "● reconnecting…"}
           </Typography>
           <Stack direction="row" spacing={0.5}>
+            {canBackToLobby && onBackToLobby ? (
+              <Button
+                size="small"
+                startIcon={<ArrowBackIcon fontSize="small" />}
+                onClick={onBackToLobby}
+                sx={{ color: "primary.main" }}
+              >
+                Games
+              </Button>
+            ) : null}
             {canPause && onPause ? (
               <Button size="small" onClick={onPause} sx={{ color: "text.secondary" }}>
                 Pause

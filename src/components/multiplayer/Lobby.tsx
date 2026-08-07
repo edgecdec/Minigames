@@ -97,6 +97,7 @@ export default function Lobby() {
             userId={room.userId}
             isHost={room.isHost}
             send={room.send}
+            roomWins={state.roomWins}
           />
         );
       case "snake-duel":
@@ -107,6 +108,7 @@ export default function Lobby() {
             userId={room.userId}
             isHost={room.isHost}
             send={room.send}
+            roomWins={state.roomWins}
           />
         );
       case "double-it-duel":
@@ -117,6 +119,7 @@ export default function Lobby() {
             userId={room.userId}
             isHost={room.isHost}
             send={room.send}
+            roomWins={state.roomWins}
           />
         );
       default:
@@ -138,6 +141,9 @@ export default function Lobby() {
         // Only offer Pause when there is actually a game to freeze, and only to
         // the host — the server enforces the same rule.
         canPause={room.isHost && !!state.game && !!state.gameState && !state.paused}
+        onBackToLobby={room.backToLobby}
+        // Only meaningful once a game is chosen; the picker IS the lobby.
+        canBackToLobby={room.isHost && !!state.game}
       />
 
       {room.error ? (
@@ -170,7 +176,11 @@ export default function Lobby() {
               Share the room code above to invite more people.
             </Typography>
           ) : null}
-          <PlayerList players={state.players} userId={room.userId} />
+          <PlayerList
+            players={state.players}
+            userId={room.userId}
+            wins={state.roomWins}
+          />
         </Stack>
       )}
     </Stack>

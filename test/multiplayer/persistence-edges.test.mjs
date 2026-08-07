@@ -222,7 +222,9 @@ await start("snake");
   a.s.emit("select_game", { game: "snake-duel" });
   await wait(400);
   a.s.emit("game_event", { event: "start" });
-  await wait(2500);
+  // Must clear the full 3-2-1 countdown, which runs on real seconds now. 2500ms
+  // landed inside it, where tick is legitimately still 0.
+  await wait(4200);
   const preTick = a.game()?.tick;
   t("snake was ticking", preTick > 0, String(preTick));
 

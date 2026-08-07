@@ -13,6 +13,7 @@ line of defence. These exist for the wiring around them.
 # needs a server you start yourself
 PORT=3070 node test/multiplayer/duel-rules.test.mjs
 PORT=3050 node test/multiplayer/pause.test.mjs
+PORT=3070 node test/multiplayer/switch-games.test.mjs
 
 # these start and stop the server themselves — do NOT have one running
 PORT=3080 node test/multiplayer/persistence.test.mjs
@@ -37,6 +38,7 @@ and nothing reclaims its seat.
 | `pause.test.mjs` | Host pause/resume across all three games, and that a paused room refuses game events |
 | `persistence.test.mjs` | Full restart: SIGINT → snapshot → boot → restore → reclaim seats → resume → keep playing |
 | `persistence-edges.test.mjs` | Lobby-only rooms aren't saved, finished games restore as finished, stale snapshots are dropped, Snake's tick freezes and resumes |
+| `switch-games.test.mjs` | Back-to-lobby keeps the room, host-only, and the room win tally surviving game switches |
 
 ## Writing more of these — read this first
 
@@ -62,3 +64,14 @@ The suites are shaped to prevent each one:
   compare turn boundaries.
 - **Assertions must be case-insensitive.** MUI uppercases headings in CSS, so
   `inner_text` returns `BEST RUNS`, not `Best runs`.
+- **Wait past the 3-2-1 countdown, not just past one tick.** Snake's countdown runs
+  on wall-clock seconds, so `start` is followed by ~3.1s where `tick` is still 0.
+  Two suites asserted "snake is ticking" after 1200ms and 2500ms and began failing
+  when the countdown was fixed — the product was fine both times.
+- **Assert on something only one screen can show.** A browser check for the text
+  "pick a game" passed everywhere, because the page subtitle reads "Create a room,
+  share the code, pick a game". Count the game CARDS instead: N in the picker, 0
+  inside a game. A selector matching the wrong element reports a bug that isn't
+  there and hides one that is.
+- **Honour `PORT`, not just `BASE`.** One suite read only `BASE`, so a `PORT=` run
+  silently talked to the default port and failed on a null join.

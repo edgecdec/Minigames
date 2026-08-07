@@ -14,11 +14,17 @@ export default function PlayerList({
   /** Ids that have completed the current step, e.g. locked in a word. */
   readyIds = [],
   readyLabel = "ready",
+  wins,
 }: {
   players: RoomPlayer[];
   userId: string;
   readyIds?: string[];
   readyLabel?: string;
+  /**
+   * Session wins across EVERY game played in this room, keyed by userId.
+   * Room-level rather than per-game, so switching games doesn't reset it.
+   */
+  wins?: Record<string, number>;
 }) {
   return (
     <Paper
@@ -83,11 +89,18 @@ export default function PlayerList({
                 ) : null}
               </Stack>
 
-              {ready ? (
-                <Typography variant="caption" sx={{ color: "success.main", fontWeight: 700 }}>
-                  ✓ {readyLabel}
-                </Typography>
-              ) : null}
+              <Stack direction="row" spacing={1} alignItems="center">
+                {wins && wins[p.id] ? (
+                  <Typography variant="caption" sx={{ color: "#ffd76a", fontWeight: 700 }}>
+                    🏆 {wins[p.id]}
+                  </Typography>
+                ) : null}
+                {ready ? (
+                  <Typography variant="caption" sx={{ color: "success.main", fontWeight: 700 }}>
+                    ✓ {readyLabel}
+                  </Typography>
+                ) : null}
+              </Stack>
             </Box>
           );
         })}

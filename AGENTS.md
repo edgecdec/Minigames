@@ -226,7 +226,10 @@ Adding one:
 2. `src/games/<slug>/server.js` — room handlers (`createState`, `publicState`,
    `onEvent`, optional `onPlayerLeave`). CommonJS: `server.js` loads it outside
    the webpack build.
-3. `src/games/<slug>/<Name>Room.tsx` — the in-lobby view
+3. `src/games/<slug>/<Name>Room.tsx` — the in-lobby view. Type its props as
+   `RoomGameProps<YourPublicState>` (from `src/lib/useRoom.ts`) rather than
+   spelling them out, so it picks up anything added later. Three rooms had
+   hand-written prop lists and all three silently missed `roomWins`.
 4. an entry in `multiplayerRegistry.ts`, plus `registerGame()` in `server.js`
 
 ### Rules with teeth
@@ -241,6 +244,10 @@ Adding one:
   needs a stable anon id; generating one per `join_room` seats the same browser
   as several players and the room waits forever on people who don't exist. This
   was a real bug — the browser test caught it after the protocol test didn't.
+- **Session wins belong to the ROOM, not the game.** `rooms.js` counts them off
+  `state.winner`, so a game needs no tally of its own and switching games can't
+  reset the score. Set `state.winner` to a userId and it's counted; a game that
+  kept its own count would lose it the moment the host went back to the lobby.
 - **`publicState` is a privacy boundary.** Send who has acted, not what they did.
   Codenames leaks the game entirely if submissions go out before the reveal.
 - **Handle the player who leaves mid-round.** `onPlayerLeave` must not leave

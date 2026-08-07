@@ -1,9 +1,20 @@
 /**
  * "Land Grab" — territory capture on a square grid. Pure rules, no DOM, no sockets.
  *
- * Free-for-all. Every cell you step on becomes yours PERMANENTLY, and the round
- * ends when the board is full (or the clock runs out, whichever comes first).
- * Most ground wins.
+ * Free-for-all. Every cell you step on becomes yours, the round ends when the
+ * board is full (or the clock runs out), and the most ground wins.
+ *
+ * TWO MODES, which is the whole difference between them:
+ *
+ * - **Claim** (`raidingAllowed: false`) — claims are PERMANENT. Enemy land is
+ *   solid, so the only way to lose ground is to be fully surrounded. A race for
+ *   open space.
+ * - **Raid** (`raidingAllowed: true`) — claims are NOT permanent. You can walk
+ *   over enemy cells and take them, but you crawl while you do, and the owner can
+ *   catch and kill you. A fight over the same ground.
+ *
+ * Perma-claiming belongs to Claim mode only; saying "your cells are permanent"
+ * about Raid mode would be wrong, since taking them is the entire point.
  *
  * WHY THERE ARE NO TRAILS. The first version was paper.io-style: leaving your
  * land drew a trail, getting home claimed the loop, and cutting someone's trail
@@ -61,14 +72,21 @@ export const ENEMY_SLOWDOWN = 3;
 export const ENEMY_SLOWDOWN_OPTIONS = [1, 2, 3, 4, 5] as const;
 
 /**
- * Selectable spawn-protection lengths, in seconds.
+ * Selectable respawn delays, in seconds.
  *
- * NOT a respawn timer — nothing respawns any more, because a claimed cell is
- * permanent and no player can ever be reset. This only covers the opening
- * window, so a raider can't reach someone's starting block before they have had
- * a chance to move.
+ * The cost of being killed. Without a real delay, dying is nearly free and the
+ * board devolves into everyone bumping each other constantly.
  */
-export const SPAWN_PROTECT_OPTIONS = [0, 3, 5, 10] as const;
+export const RESPAWN_OPTIONS = [2, 3, 5, 8] as const;
+
+/**
+ * Cells a respawn point must keep clear of every living player.
+ *
+ * Coming back right next to whoever just killed you is the worst outcome: they
+ * are still standing on their own ground, so they can immediately kill you again.
+ * The delay alone doesn't fix that — the placement has to.
+ */
+export const RESPAWN_CLEARANCE = 8;
 
 /** Fallback round length; the lobby can pick another. */
 export const ROUND_SECONDS = 180;
@@ -78,12 +96,11 @@ export const MAX_PLAYERS = 8;
 /** Half-width of the square each player starts holding. 1 => a 3x3 block. */
 export const SPAWN_BLOCK = 1;
 
-/** Default spawn protection, in ticks. */
-export const SPAWN_PROTECT_TICKS = Math.round(3000 / TICK_MS);
+/** Default respawn delay, in ticks. */
+export const RESPAWN_TICKS = Math.round(3000 / TICK_MS);
 
 /** Convert a seconds setting into ticks. */
-export const protectTicksFor = (seconds: number): number =>
-  Math.round((seconds * 1000) / TICK_MS);
+export const ticksFor = (seconds: number): number => Math.round((seconds * 1000) / TICK_MS);
 
 export const DIRS = {
   up: { x: 0, y: -1 },
@@ -268,7 +285,28 @@ export interface Land {
   everClaimed: number;
   /** Cells taken by sealing a region, for an end-of-round stat. */
   enclosed: number;
+  /**
+   * Tick this player comes back, or null while alive.
+   *
+   * Dead players don't move, don't claim, and can't be killed again.
+   */
+  respawnAtTick: number | null;
+  /**
+   * Where they will reappear, chosen the moment they die.
+   *
+   * Fixed at death rather than at respawn so the client can FLASH it for the whole
+   * countdown — everyone can see where the fight is about to restart, instead of
+   * someone materialising on top of them.
+   */
+  respawnAt: Cell | null;
+  /** How many times they've been killed, for an end-of-round stat. */
+  deaths: number;
+  /** Kills they've made defending their own ground. */
+  kills: number;
 }
+
+/** Alive means not waiting out a respawn. */
+export const isAlive = (land: Land): boolean => land.respawnAtTick === null;
 
 export type Phase = "waiting" | "countdown" | "playing" | "over";
 
@@ -295,8 +333,8 @@ export interface TerritoryState {
   raidingAllowed: boolean;
   /** Stall applied per enemy cell entered. 1 = no penalty. */
   enemySlowdown: number;
-  /** Ticks of opening protection; 0 disables it. */
-  protectTicks: number;
+  /** Ticks a killed player waits before coming back. */
+  respawnTicks: number;
   winner: string | null;
   /**
    * Final table. `rank` is competition-style, so equal scores SHARE a place and
@@ -304,7 +342,15 @@ export interface TerritoryState {
    * an order between genuinely equal players is just a lie about the result.
    */
   standings:
-    | { userId: string; cells: number; enclosed: number; rank: number; tied: boolean }[]
+    | {
+        userId: string;
+        cells: number;
+        enclosed: number;
+        kills: number;
+        deaths: number;
+        rank: number;
+        tied: boolean;
+      }[]
     | null;
   /** Why the round ended, so the UI can say so. */
   endReason: "full" | "time" | "stalled" | null;
@@ -319,12 +365,10 @@ export const inBoundsOf = (cols: number, rows: number, x: number, y: number): bo
 /** 1-based owner marker for a player index, so 0 can mean OPEN. */
 export const ownerOf = (playerIndex: number): number => playerIndex + 1;
 
-export function isProtected(state: TerritoryState): boolean {
-  return state.tick < state.protectTicks;
-}
-
-export function protectionLeft(state: TerritoryState): number {
-  return Math.max(0, state.protectTicks - state.tick);
+/** Ticks until this player is back, or 0 if they're alive. */
+export function respawnLeft(state: TerritoryState, land: Land): number {
+  if (land.respawnAtTick === null) return 0;
+  return Math.max(0, land.respawnAtTick - state.tick);
 }
 
 /** Build a map's starting grid. `art` wins over `mask` when both are given. */
@@ -473,7 +517,7 @@ export function createGame(
     raidingAllowed?: boolean;
     roundSeconds?: number;
     enemySlowdown?: number;
-    protectSeconds?: number;
+    respawnSeconds?: number;
     phase?: Phase;
   } = {},
 ): TerritoryState {
@@ -496,6 +540,10 @@ export function createGame(
       stallTicks: 0,
       everClaimed: 0,
       enclosed: 0,
+      respawnAtTick: null,
+      respawnAt: null,
+      deaths: 0,
+      kills: 0,
     })),
     mapName: map.name,
     tick: 0,
@@ -504,15 +552,15 @@ export function createGame(
     countdown: 3,
     raidingAllowed: opts.raidingAllowed ?? true,
     // Clamped to the offered values so a crafted payload can't make a raid free
-    // or protection permanent.
+    // or a respawn instant.
     enemySlowdown: (ENEMY_SLOWDOWN_OPTIONS as readonly number[]).includes(
       opts.enemySlowdown ?? ENEMY_SLOWDOWN,
     )
       ? (opts.enemySlowdown ?? ENEMY_SLOWDOWN)
       : ENEMY_SLOWDOWN,
-    protectTicks: protectTicksFor(
-      (SPAWN_PROTECT_OPTIONS as readonly number[]).includes(opts.protectSeconds ?? 3)
-        ? (opts.protectSeconds ?? 3)
+    respawnTicks: ticksFor(
+      (RESPAWN_OPTIONS as readonly number[]).includes(opts.respawnSeconds ?? 3)
+        ? (opts.respawnSeconds ?? 3)
         : 3,
     ),
     winner: null,
@@ -549,6 +597,9 @@ export function createGame(
 export function queueTurn(state: TerritoryState, userId: string, dir: Dir): TerritoryState {
   const land = state.players.find((p) => p.userId === userId);
   if (!land) return state;
+  // Ignore input from a dead player: banked turns would fire the instant they
+  // return, lurching them off in a direction they chose seconds earlier.
+  if (!isAlive(land)) return state;
   const last = land.queued.length ? land.queued[land.queued.length - 1] : land.dir;
   // Same direction is still a no-op; there is nothing to change.
   if (dir.x === last.x && dir.y === last.y) return state;
@@ -619,6 +670,136 @@ export function enclosedCells(
 }
 
 /**
+ * Pick somewhere to come back, as far from every living player as possible.
+ *
+ * Respawning next to whoever just killed you is the worst possible outcome: they
+ * are still standing on their own ground and can kill you again immediately. So
+ * this maximises the distance to the nearest living player rather than picking at
+ * random, and prefers your own remaining land when it is safe — coming back on
+ * ground you own means you aren't instantly a trespasser.
+ */
+export function pickRespawn(
+  state: TerritoryState,
+  playerIndex: number,
+  rng: () => number = Math.random,
+): Cell {
+  const mark = ownerOf(playerIndex);
+  const living = state.players
+    .filter((p, i) => i !== playerIndex && isAlive(p))
+    .map((p) => p.at);
+
+  const nearest = (c: Cell): number =>
+    living.length === 0
+      ? Infinity
+      : Math.min(...living.map((o) => Math.abs(o.x - c.x) + Math.abs(o.y - c.y)));
+
+  let best: Cell | null = null;
+  let bestScore = -Infinity;
+
+  // Sample rather than scan every cell: a 60x48 board is 2880 cells and this runs
+  // the moment someone dies, inside a 110ms tick.
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const c = {
+      x: Math.floor(rng() * state.cols),
+      y: Math.floor(rng() * state.rows),
+    };
+    const i = idxIn(state.cols, c.x, c.y);
+    if (state.grid[i] === WALL) continue;
+    const dist = nearest(c);
+    // Own ground is a small bonus, but never at the cost of real distance.
+    const score = Math.min(dist, RESPAWN_CLEARANCE * 3) + (state.grid[i] === mark ? 2 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
+    }
+    // Good enough: stop early rather than burning the whole budget.
+    if (dist >= RESPAWN_CLEARANCE * 2) break;
+  }
+
+  // Deterministic fallback so a dense board can't return null.
+  if (!best) {
+    for (let y = 0; y < state.rows && !best; y++) {
+      for (let x = 0; x < state.cols; x++) {
+        if (state.grid[idxIn(state.cols, x, y)] !== WALL) {
+          best = { x, y };
+          break;
+        }
+      }
+    }
+  }
+  return best ?? { x: 0, y: 0 };
+}
+
+/**
+ * Is `cell` inside `mark`'s territory?
+ *
+ * "Inside" is a question about the NEIGHBOURHOOD, not the single square underfoot.
+ * A raider rewrites each cell as they enter it, so within a few ticks their own
+ * trail of stolen squares makes them look like they are standing on their own
+ * land — a defender could occupy the very same cell and no kill would register,
+ * however closely they chased. Snapshotting ownership one tick earlier does not
+ * help either: the cell changed hands ticks ago.
+ *
+ * A majority of the 8 neighbours (judged against `before`, the ownership at the
+ * start of the tick) is robust to that thin stolen line, while still saying "no"
+ * on open ground and near a genuine border.
+ *
+ * CONSEQUENCE WORTH KNOWING: you can only defend land that is roughly 3+ cells
+ * thick. A single-cell path you traced across the map is not a homeland and cannot
+ * be defended — measured, a 1-wide line never yields a kill while a 3-wide
+ * corridor does. That is a deliberate trade-off in favour of the raider: it means
+ * territory has to be genuinely held, not merely outlined.
+ */
+function surroundedBy(
+  state: TerritoryState,
+  cell: Cell,
+  mark: number,
+  before: number[],
+): boolean {
+  let theirs = 0;
+  let claimable = 0;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const x = cell.x + dx;
+      const y = cell.y + dy;
+      if (!inBoundsOf(state.cols, state.rows, x, y)) continue;
+      const v = before[idxIn(state.cols, x, y)];
+      if (v === WALL) continue;
+      claimable++;
+      if (v === mark) theirs++;
+    }
+  }
+  return claimable > 0 && theirs * 2 > claimable;
+}
+
+/**
+ * Kill a player: they stop moving, and come back after the respawn delay at a
+ * point chosen NOW so the client can telegraph it.
+ *
+ * Their territory is untouched. Losing your land on death would make one unlucky
+ * bump undo a whole round, and enclosure is meant to be the way ground changes
+ * hands.
+ */
+export function killPlayer(
+  state: TerritoryState,
+  victimIndex: number,
+  killerIndex: number | null,
+  rng: () => number = Math.random,
+): void {
+  const victim = state.players[victimIndex];
+  if (!isAlive(victim)) return;
+  victim.respawnAtTick = state.tick + state.respawnTicks;
+  victim.respawnAt = pickRespawn(state, victimIndex, rng);
+  victim.stallTicks = 0;
+  victim.queued = [];
+  victim.deaths++;
+  if (killerIndex !== null && state.players[killerIndex]) {
+    state.players[killerIndex].kills++;
+  }
+}
+
+/**
  * Absorb anything this player has sealed off. Returns how many cells changed.
  *
  * The ONLY way ground changes hands without being walked on, and the only way a
@@ -667,14 +848,42 @@ export function openCells(state: TerritoryState): number {
  * a collision has no consequence worth modelling.
  */
 export function step(state: TerritoryState, rng: () => number = Math.random): TerritoryState {
-  void rng; // no respawns any more; kept so callers don't have to change
   if (state.phase === "playing") {
     state.tick++;
     state.ticksLeft = Math.max(0, state.ticksLeft - 1);
 
     const claimers = new Set<number>();
 
+    // Bring back anyone whose timer has run out, at the point chosen when they
+    // died — so where they appear is where the client has been flashing.
+    const justRespawned = new Set<number>();
     state.players.forEach((land, i) => {
+      if (land.respawnAtTick !== null && state.tick >= land.respawnAtTick) {
+        land.at = land.respawnAt ?? pickRespawn(state, i, rng);
+        land.respawnAtTick = null;
+        land.respawnAt = null;
+        land.dir = facingOpen(state, land.at);
+        land.queued = [];
+        // Skip movement for this one tick, so they actually APPEAR on the square
+        // the client has been flashing. Moving in the same tick they return puts
+        // them one cell off, which makes the telegraph a lie.
+        justRespawned.add(i);
+      }
+    });
+
+    // Ownership as it stood when the tick began, before anyone's claims land.
+    // The kill check judges an exchange against this rather than the live grid.
+    const contested = state.grid.slice();
+    // Where everyone stood before moving, so a head-on swap can be detected.
+    const prev: Record<number, Cell> = {};
+    state.players.forEach((land, i) => {
+      if (isAlive(land)) prev[i] = { ...land.at };
+    });
+
+    state.players.forEach((land, i) => {
+      // Dead players don't move, don't claim, and can't be killed again.
+      if (!isAlive(land)) return;
+      if (justRespawned.has(i)) return;
       if (land.stallTicks > 0) {
         land.stallTicks--;
         return;
@@ -693,6 +902,8 @@ export function step(state: TerritoryState, rng: () => number = Math.random): Te
 
       // Raiding off: enemy ground is solid, so nobody can lose a cell by being
       // walked over — only by being enclosed.
+      // CLAIM MODE: enemy land is solid, so a claim really is permanent — the only
+      // way to lose ground is being surrounded. RAID MODE lets it change hands.
       if (!state.raidingAllowed && owner !== OPEN && owner !== mark) return;
 
       land.at = next;
@@ -710,6 +921,64 @@ export function step(state: TerritoryState, rng: () => number = Math.random): Te
     // runs at most once per mover rather than once per player per tick.
     for (const i of claimers) absorbEnclosed(state, i);
 
+    // ---- defending your ground ----
+    //
+    // Catch a trespasser standing on land you own and they're killed. Collected
+    // then applied, so two players who reach each other on the same tick are
+    // resolved together rather than the lower index winning by accident.
+    //
+    // Only on YOUR OWN ground: this is a defence, not a free-for-all bump. Two
+    // players meeting on open ground do nothing to each other.
+    // Only in Raid mode. In Claim mode enemy land is impassable, so nobody can be
+    // standing on yours to catch in the first place.
+    const doomed = new Map<number, number>();
+    if (state.raidingAllowed) {
+      state.players.forEach((attacker, ai) => {
+        if (!isAlive(attacker)) return;
+        const mine = ownerOf(ai);
+        state.players.forEach((victim, vi) => {
+          if (ai === vi || !isAlive(victim)) return;
+
+          // Two ways to catch someone, and the second one is essential.
+          //
+          // SAME CELL: you moved onto the square they occupy.
+          const sameCell = victim.at.x === attacker.at.x && victim.at.y === attacker.at.y;
+          // SWAPPED: you passed straight through each other in one tick. Without
+          // this a stern chase is unwinnable — everyone moves one cell per tick, so
+          // a defender directly behind a raider never closes the gap and killing is
+          // effectively impossible. Head-on, the two would otherwise slide past.
+          const swapped =
+            prev[vi] !== undefined &&
+            prev[ai] !== undefined &&
+            victim.at.x === prev[ai].x &&
+            victim.at.y === prev[ai].y &&
+            attacker.at.x === prev[vi].x &&
+            attacker.at.y === prev[vi].y;
+
+          if (!sameCell && !swapped) return;
+
+          // WHOSE GROUND IS THIS?
+          //
+          // Not the single square underfoot. A raider claims each cell as they
+          // enter it, so a few ticks into a raid their own trail of stolen squares
+          // makes them look like they are standing on their own land — the defender
+          // could occupy the very same cell and no kill would register, however
+          // closely they chased. Snapshotting one tick earlier doesn't help; the
+          // cell changed hands ticks ago.
+          //
+          // So: is the victim INSIDE the attacker's territory (a majority of
+          // neighbours), and NOT inside their own? The second half matters — both
+          // players are surrounded by the owner's land during a chase, so a
+          // symmetric test killed the defender on home ground, the exact opposite
+          // of the rule.
+          if (!surroundedBy(state, victim.at, mine, contested)) return;
+          if (surroundedBy(state, victim.at, ownerOf(vi), contested)) return;
+          doomed.set(vi, ai);
+        });
+      });
+    }
+    for (const [vi, ai] of doomed) killPlayer(state, vi, ai, rng);
+
     // Board full is the natural end: there is nothing left to play for.
     if (openCells(state) === 0) return resolveOutcome(state, "full");
     if (state.ticksLeft <= 0) return resolveOutcome(state, "time");
@@ -723,7 +992,13 @@ export function resolveOutcome(
   reason: "full" | "time" | "stalled" = "time",
 ): TerritoryState {
   const scored = state.players
-    .map((p) => ({ userId: p.userId, cells: cellsOf(state, p.userId), enclosed: p.enclosed }))
+    .map((p) => ({
+      userId: p.userId,
+      cells: cellsOf(state, p.userId),
+      enclosed: p.enclosed,
+      kills: p.kills,
+      deaths: p.deaths,
+    }))
     .sort((a, b) => b.cells - a.cells);
 
   // Competition ranking: equal scores share a place, and the place after a tie

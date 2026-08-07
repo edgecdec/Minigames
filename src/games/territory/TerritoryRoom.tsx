@@ -23,6 +23,13 @@ export interface TerritoryPublicState {
     stalled: boolean;
     everClaimed: number;
     enclosed: number;
+    alive: boolean;
+    /** Ticks until they return, 0 while alive. */
+    respawnIn: number;
+    /** Where they will reappear — flashed for the whole countdown. */
+    respawnAt: { x: number; y: number } | null;
+    kills: number;
+    deaths: number;
   }[];
   mapName: string;
   settings: {
@@ -30,14 +37,14 @@ export interface TerritoryPublicState {
     raidingAllowed: boolean;
     roundSeconds: number;
     enemySlowdown: number;
-    protectSeconds: number;
+    respawnSeconds: number;
   };
   options: {
     maps: { name: string; cols: number; rows: number; bestFor: string }[];
     mapNames: string[];
     roundSeconds: number[];
     enemySlowdown: number[];
-    protectSeconds: number[];
+    respawnSeconds: number[];
   };
   tick: number;
   ticksLeft: number;
@@ -46,7 +53,15 @@ export interface TerritoryPublicState {
   winner: string | null;
   /** `rank` is competition-style: equal scores share a place (1, T2, T2, 4). */
   standings:
-    | { userId: string; cells: number; enclosed: number; rank: number; tied: boolean }[]
+    | {
+        userId: string;
+        cells: number;
+        enclosed: number;
+        kills: number;
+        deaths: number;
+        rank: number;
+        tied: boolean;
+      }[]
     | null;
   endReason: "full" | "time" | "stalled" | null;
   openCells: number;
@@ -55,7 +70,7 @@ export interface TerritoryPublicState {
   cols: number;
   rows: number;
   claimable: number;
-  protectedTicks: number;
+  respawnTicks: number;
   tickMs: number;
 }
 
@@ -215,29 +230,43 @@ export default function TerritoryRoom({
       ctx.stroke();
     }
 
-    const shielded = state.protectedTicks > 0;
+    // Flash phase, driven off the server tick so every client blinks in step.
+    // ~3 ticks on, 3 off at 110ms is a visible pulse rather than a strobe.
+    const flashOn = Math.floor(state.tick / 3) % 2 === 0;
 
     state.players.forEach((p) => {
       const palette = paletteFor(p.userId, userId, otherIds);
-      // No trail to draw any more — a claimed cell IS the record of where you went.
-      // Just the head, bright, drawn last so it is never buried under land.
+
+      // A DEAD player is drawn at their incoming respawn point, not their corpse.
+      //
+      // Flashing where they will reappear is the whole point: respawning next to
+      // whoever killed you is punishing, so everyone gets to see the fight
+      // restarting before it does, and can move away or move in.
+      if (!p.alive) {
+        if (p.respawnAt) {
+          const rx = p.respawnAt.x * cell;
+          const ry = p.respawnAt.y * cell;
+          ctx.globalAlpha = flashOn ? 0.85 : 0.25;
+          ctx.fillStyle = palette.head;
+          ctx.fillRect(rx, ry, cell, cell);
+          ctx.globalAlpha = 1;
+          // A ring around it, so it reads as "arriving" rather than "standing".
+          ctx.strokeStyle = palette.head;
+          ctx.lineWidth = 1.5;
+          ctx.globalAlpha = flashOn ? 1 : 0.4;
+          ctx.beginPath();
+          ctx.arc(rx + cell / 2, ry + cell / 2, cell * 1.3, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+        return;
+      }
+
+      // No trail to draw — a claimed cell IS the record of where you went. Just
+      // the head, bright, drawn last so it is never buried under land.
       ctx.fillStyle = palette.head;
       ctx.fillRect(p.at.x * cell, p.at.y * cell, cell, cell);
 
-      // Ring while protected, so it's obvious why nobody is being reset.
-      if (shielded) {
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(
-          p.at.x * cell + cell / 2,
-          p.at.y * cell + cell / 2,
-          cell * 1.1,
-          0,
-          Math.PI * 2,
-        );
-        ctx.stroke();
-      }
       // A stalled raider gets a marker, or the slowdown reads as a frozen game.
       if (p.stalled) {
         ctx.fillStyle = "rgba(255,255,255,0.6)";
@@ -365,9 +394,10 @@ export default function TerritoryRoom({
             sx={{ width: "100%", maxWidth: 480, borderRadius: 1 }}
           />
           <Stack spacing={0.5} alignItems="center">
-            {state.protectedTicks > 0 ? (
-              <Typography variant="body2" sx={{ fontWeight: 700, color: "success.main" }}>
-                🛡 Spawn protection — {Math.ceil((state.protectedTicks * state.tickMs) / 1000)}s
+            {me && !me.alive ? (
+              <Typography variant="body2" sx={{ fontWeight: 700, color: "error.main" }}>
+                💀 Respawning in {Math.ceil((me.respawnIn * state.tickMs) / 1000)}s — the
+                flashing square is where you&apos;ll land
               </Typography>
             ) : null}
             {me?.stalled ? (
@@ -434,12 +464,12 @@ export default function TerritoryRoom({
                 format: (n) => (Number(n) === 1 ? "full speed" : `${n}x slower`),
               },
               {
-                field: "protectSeconds",
-                label: "Spawn protection",
-                hint: "Opening grace period before anyone can be raided",
-                options: state.options.protectSeconds,
-                value: state.settings.protectSeconds,
-                format: (n) => (Number(n) === 0 ? "off" : `${n}s`),
+                field: "respawnSeconds",
+                label: "Respawn delay",
+                hint: "How long you wait after being killed. You come back well away from your killer.",
+                options: state.options.respawnSeconds,
+                value: state.settings.respawnSeconds,
+                format: (n) => `${n}s`,
               },
             ]}
             onChange={(field, value) =>

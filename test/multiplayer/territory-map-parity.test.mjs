@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const { MAPS: TS, buildGrid, WALL } = await import(
+const { MAPS: TS, buildGrid, WALL, RESPAWN_OPTIONS, ENEMY_SLOWDOWN_OPTIONS } = await import(
   path.join(REPO, "src/games/territory/logic.ts")
 );
 const srv = (await import(path.join(REPO, "src/games/territory/server.js"))).default;
@@ -46,4 +46,42 @@ for (const m of TS) {
   console.log(`${ok ? "OK  " : "DIFF"} ${m.name}: dims ${state.cols}x${state.rows} vs ${m.cols}x${m.rows}, wall diffs=${diffs}`);
 }
 console.log(allOk ? "\nAll maps identical in both copies" : "\nMISMATCH");
-process.exit(allOk ? 0 : 1);
+
+// ---------------------------------------------------------------- kill rules
+//
+// server.js does not export step(), so the catch RULE itself is covered by the
+// logic tests (which drove it through four scenarios after it was wrong in three
+// separate ways). What this asserts is the observable contract the client depends
+// on, and that the settings allow-lists in the two copies are identical — a
+// divergence there means a client offering a value the server silently rejects.
+console.log("\n=== kill rules, server copy ===");
+let killOk = true;
+const kt = (name, cond, extra = "") => {
+  if (!cond) { killOk = false; console.log("FAIL:", name, JSON.stringify(extra)); }
+  else console.log("OK  ", name);
+};
+
+{
+  const room = { players: new Map([["a", { id: "a", connected: true }], ["b", { id: "b", connected: true }]]) };
+  const state = srv.createState(room);
+  const pub = srv.publicState(room, state);
+  kt("players expose alive", pub.players.every((p) => typeof p.alive === "boolean"));
+  kt("players expose a respawn countdown", pub.players.every((p) => typeof p.respawnIn === "number"));
+  kt("players expose the telegraphed respawn point",
+    pub.players.every((p) => p.respawnAt === null || typeof p.respawnAt.x === "number"));
+  kt("players expose kills and deaths",
+    pub.players.every((p) => p.kills === 0 && p.deaths === 0));
+  kt("the respawn delay is published", typeof pub.respawnTicks === "number", pub.respawnTicks);
+  kt("respawn options are offered", Array.isArray(pub.options.respawnSeconds),
+    pub.options.respawnSeconds);
+  kt("spawn protection is gone", pub.protectedTicks === undefined);
+  kt("the options match logic.ts",
+    JSON.stringify(pub.options.respawnSeconds) === JSON.stringify([...RESPAWN_OPTIONS]),
+    [pub.options.respawnSeconds, [...RESPAWN_OPTIONS]]);
+  kt("enemy slowdown options match",
+    JSON.stringify(pub.options.enemySlowdown) === JSON.stringify([...ENEMY_SLOWDOWN_OPTIONS]),
+    [pub.options.enemySlowdown, [...ENEMY_SLOWDOWN_OPTIONS]]);
+}
+
+console.log(killOk ? "\nServer contract matches logic.ts" : "\nCONTRACT MISMATCH");
+process.exit(allOk && killOk ? 0 : 1);

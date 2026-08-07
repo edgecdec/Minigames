@@ -94,6 +94,14 @@ The suites are shaped to prevent each one:
   port makes the new one die with EADDRINUSE while `curl` still returns 200 — so a
   brand-new game looks unregistered and its tests fail for no visible reason.
   `grep "Multiplayer ready" ` the log and check your game is listed.
+- **Some scenarios can't be forced over sockets — say so instead of pretending.**
+  Land Grab's kill needs a defender to catch a raider inside land ~3 cells thick,
+  and two players pacing a small board may simply never produce that. The socket
+  suite logs whether a kill occurred and checks the wiring only when one did; the
+  RULE is pinned deterministically in `logic.test.ts`. A silent skip would let the
+  section rot unnoticed, and a hard assert would be flaky for a non-bug.
+- **Steering two bots at each other doesn't converge.** A one-axis chase makes both
+  players mirror each other and settle one cell apart forever. Park the target.
 - **Test every MAP, not just the default one.** Land Grab's flood fill seeded from
   the board border, and every border cell of a silhouette is wall — so on the Cat
   the fill never started, the whole board read as "enclosed", and the first mover

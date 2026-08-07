@@ -10,11 +10,17 @@
  */
 import {
   DIRS,
+  type Dir,
   ENEMY_SLOWDOWN,
   MAPS,
   OPEN,
   SPAWN_BLOCK,
-  SPAWN_PROTECT_TICKS,
+  RESPAWN_CLEARANCE,
+  isAlive,
+  killPlayer,
+  pickRespawn,
+  respawnLeft,
+  ticksFor,
   WALL,
   absorbEnclosed,
   buildGrid,
@@ -51,7 +57,7 @@ const at = (s: TerritoryState, i: number) => s.players[i].at;
 const gridAt = (s: TerritoryState, x: number, y: number) => s.grid[idxIn(s.cols, x, y)];
 
 /** Put a player somewhere, facing a direction, with no queued turns. */
-function place(s: TerritoryState, i: number, x: number, y: number, dir = DIRS.right) {
+function place(s: TerritoryState, i: number, x: number, y: number, dir: Dir = DIRS.right) {
   s.players[i].at = { x, y };
   s.players[i].dir = dir;
   s.players[i].queued = [];
@@ -388,7 +394,6 @@ for (const m of MAPS) {
 // ---------- raiding ----------
 {
   const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", raidingAllowed: true });
-  g.tick = SPAWN_PROTECT_TICKS;
   g.grid.fill(OPEN);
   paint(g, 1, 10, 10, 20, 20);
   place(g, 0, 9, 15, DIRS.right);
@@ -404,7 +409,6 @@ for (const m of MAPS) {
 }
 {
   const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", raidingAllowed: false });
-  g.tick = SPAWN_PROTECT_TICKS;
   g.grid.fill(OPEN);
   paint(g, 1, 10, 10, 20, 20);
   place(g, 0, 9, 15, DIRS.right);
@@ -503,7 +507,6 @@ for (const m of MAPS) {
 for (const m of MAPS) {
   const ids = ["a", "b", "c", "d"];
   const g = createGame(ids, { phase: "playing", mapName: m.name, roundSeconds: 60 });
-  g.tick = SPAWN_PROTECT_TICKS;
   const dirs = [DIRS.up, DIRS.down, DIRS.left, DIRS.right];
   let ownedWall = false;
   let overCount = false;
@@ -554,6 +557,324 @@ for (const m of MAPS) {
   t("all-equal shares first", st.every((r) => r.rank === 1 && r.tied),
     JSON.stringify(st.map((r) => [r.cells, r.rank])));
   t("a tie at the top crowns nobody", g.winner === null, String(g.winner));
+}
+
+
+// ---------- killing on your own ground, and respawning ----------
+{
+  // Catch a trespasser standing on YOUR land and they die. Only your own ground:
+  // this is a defence, not a free-for-all bump.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", respawnSeconds: 3 });
+  g.grid.fill(OPEN);
+  paint(g, 0, 10, 10, 20, 20);          // a owns a block
+  place(g, 0, 12, 15, DIRS.right);
+  // b is trespassing directly ahead and held still, so a actually catches them.
+  // A moving target just walks away — being caught is the whole rule.
+  place(g, 1, 13, 15, DIRS.right);
+  g.players[1].stallTicks = 9_999;
+  const bCells = cellsOf(g, "b");
+  step(g);
+
+  t("the trespasser is killed", !isAlive(g.players[1]), g.players[1].respawnAtTick);
+  t("the defender survives", isAlive(g.players[0]));
+  t("a death is counted", g.players[1].deaths === 1);
+  t("and a kill", g.players[0].kills === 1);
+  t("the victim keeps their TERRITORY",
+    cellsOf(g, "b") === bCells, [bCells, cellsOf(g, "b")]);
+  t("a respawn point is chosen immediately, so it can be telegraphed",
+    g.players[1].respawnAt !== null, g.players[1].respawnAt);
+  t("the countdown is the configured length",
+    respawnLeft(g, g.players[1]) === ticksFor(3), respawnLeft(g, g.players[1]));
+}
+{
+  // MERELY ENTERING enemy territory is safe. You slow down; you do not die. The
+  // owner has to actually catch you — reach the square you are standing on.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", raidingAllowed: true });
+  g.grid.fill(OPEN);
+  paint(g, 0, 10, 10, 20, 20);
+  place(g, 0, 30, 30, DIRS.right);   // the owner is far away
+  place(g, 1, 9, 15, DIRS.right);    // b walks into a's land
+  for (let i = 0; i < 12; i++) step(g);
+  t("walking deep into enemy land does NOT kill you", isAlive(g.players[1]),
+    g.players[1].respawnAtTick);
+  t("you got in", g.players[1].at.x > 9, g.players[1].at);
+  t("you were slowed, not killed", g.players[1].deaths === 0);
+}
+{
+  // Meeting on OPEN ground kills nobody — it is not a bump-fest.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing" });
+  g.grid.fill(OPEN);
+  place(g, 0, 12, 15, DIRS.right);
+  place(g, 1, 13, 15, DIRS.right);
+  step(g);
+  t("meeting on open ground kills nobody",
+    isAlive(g.players[0]) && isAlive(g.players[1]),
+    [g.players[0].respawnAtTick, g.players[1].respawnAtTick]);
+}
+{
+  // A dead player is frozen: no movement, no claiming, and no second death.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", respawnSeconds: 5 });
+  g.grid.fill(OPEN);
+  paint(g, 0, 10, 10, 20, 20);
+  place(g, 0, 12, 15, DIRS.right);
+  place(g, 1, 13, 15, DIRS.right);
+  g.players[1].stallTicks = 9_999;   // held still, so a catches them
+  step(g);
+  const deadAt = { ...g.players[1].at };
+  const cellsBefore = cellsOf(g, "b");
+  step(g);
+  step(g);
+  t("a dead player does not move",
+    g.players[1].at.x === deadAt.x && g.players[1].at.y === deadAt.y, g.players[1].at);
+  t("and claims nothing", cellsOf(g, "b") === cellsBefore);
+  t("and is not killed again", g.players[1].deaths === 1);
+  t("queued turns are discarded on death", g.players[1].queued.length === 0);
+  // A dead player pressing keys must not bank up turns that fire the instant they
+  // return — they would lurch off in a direction they chose seconds ago.
+  queueTurn(g, "b", DIRS.down);
+  t("input while dead is ignored", g.players[1].queued.length === 0,
+    g.players[1].queued.length);
+}
+{
+  // The timer must actually expire, and they must reappear WHERE IT WAS SHOWN.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", respawnSeconds: 2 });
+  g.grid.fill(OPEN);
+  paint(g, 0, 10, 10, 20, 20);
+  place(g, 0, 12, 15, DIRS.right);
+  place(g, 1, 13, 15, DIRS.right);
+  g.players[1].stallTicks = 9_999;   // held still, so a catches them
+  step(g);
+  const promised = { ...(g.players[1].respawnAt as { x: number; y: number }) };
+  const wait = respawnLeft(g, g.players[1]);
+  t("a 2s respawn is shorter than a 5s one", wait === ticksFor(2), wait);
+  for (let i = 0; i < wait; i++) step(g);
+  t("the player is back", isAlive(g.players[1]), g.players[1].respawnAtTick);
+  t("EXACTLY where the flash promised",
+    g.players[1].at.x === promised.x && g.players[1].at.y === promised.y,
+    [promised, g.players[1].at]);
+  t("the telegraph is cleared once used", g.players[1].respawnAt === null);
+}
+{
+  // THE POINT OF THE TIMER: you must not come back next to your killer. Respawning
+  // beside someone still standing on their own ground means instant re-death.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing" });
+  g.grid.fill(OPEN);
+  paint(g, 0, 10, 10, 20, 20);
+  place(g, 0, 15, 15, DIRS.right);
+  // The victim must be STATIONARY for the defender to catch them. Both moving
+  // right means b simply walks away and nobody is caught — which is the rule
+  // working, and was my test's mistake first time round.
+  place(g, 1, 16, 15, DIRS.right);
+  g.players[1].stallTicks = 9_999;
+  step(g);
+  t("the defender caught the stationary trespasser", !isAlive(g.players[1]),
+    g.players[1].respawnAtTick);
+  const spot = g.players[1].respawnAt as { x: number; y: number };
+  const killer = g.players[0].at;
+  const dist = Math.abs(spot.x - killer.x) + Math.abs(spot.y - killer.y);
+  t("the respawn point is well clear of the killer", dist >= RESPAWN_CLEARANCE,
+    { dist, spot, killer });
+  t("and is not inside a wall",
+    g.grid[idxIn(g.cols, spot.x, spot.y)] !== WALL, g.grid[idxIn(g.cols, spot.x, spot.y)]);
+}
+{
+  // pickRespawn must stay clear of EVERY living player, not just one.
+  const g = createGame(["a", "b", "c", "d"], { rng: fixedRng, phase: "playing" });
+  g.grid.fill(OPEN);
+  place(g, 1, 5, 5);
+  place(g, 2, 6, 6);
+  place(g, 3, 7, 7);
+  const spot = pickRespawn(g, 0, Math.random);
+  const nearest = Math.min(
+    ...[1, 2, 3].map((i) => Math.abs(g.players[i].at.x - spot.x) + Math.abs(g.players[i].at.y - spot.y)),
+  );
+  t("a respawn keeps clear of every living player", nearest >= RESPAWN_CLEARANCE,
+    { nearest, spot });
+}
+{
+  // On a shaped board a respawn must land inside the silhouette.
+  const g = createGame(["a", "b"], { phase: "playing", mapName: "Cat" });
+  for (let n = 0; n < 30; n++) {
+    const spot = pickRespawn(g, 0, Math.random);
+    if (g.grid[idxIn(g.cols, spot.x, spot.y)] === WALL) {
+      t("a respawn never lands in rock on a shaped map", false, spot);
+      break;
+    }
+    if (n === 29) t("a respawn never lands in rock on a shaped map", true);
+  }
+}
+{
+  // Two players reaching each other on the same tick, each on their own ground:
+  // both die. Applying kills as they are found would let the lower index win.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing" });
+  g.grid.fill(OPEN);
+  // One shared cell owned by a, and b owns the cell they'd both occupy? Instead:
+  // a steps onto b's land while b steps onto a's — a genuine mutual trespass.
+  paint(g, 0, 10, 15, 14, 15);
+  paint(g, 1, 15, 15, 19, 15);
+  place(g, 0, 14, 15, DIRS.right);   // a about to enter b's land
+  place(g, 1, 15, 15, DIRS.left);    // b about to enter a's land
+  step(g);
+  // With raiding on, each takes the other's cell and they swap sides rather than
+  // colliding — so nobody should die here. The important part is that it is
+  // SYMMETRIC, not that someone dies.
+  t("a symmetric crossing treats both players the same",
+    g.players[0].deaths === g.players[1].deaths,
+    [g.players[0].deaths, g.players[1].deaths]);
+}
+{
+  // Respawn delay is clamped to the offered values.
+  const sane = createGame(["a"], { rng: fixedRng, respawnSeconds: 8 });
+  t("a valid respawn delay is honoured", sane.respawnTicks === ticksFor(8), sane.respawnTicks);
+  const bogus = createGame(["a"], { rng: fixedRng, respawnSeconds: 999 });
+  t("a bogus respawn delay falls back to the default",
+    bogus.respawnTicks === ticksFor(3), bogus.respawnTicks);
+}
+{
+  // Standings must report the new stats.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing" });
+  killPlayer(g, 1, 0, Math.random);
+  resolveOutcome(g);
+  const st = g.standings ?? [];
+  t("standings carry kills", st.some((r) => r.kills === 1), JSON.stringify(st.map((r) => r.kills)));
+  t("standings carry deaths", st.some((r) => r.deaths === 1), JSON.stringify(st.map((r) => r.deaths)));
+}
+
+// ---------- the two modes differ exactly where they should ----------
+{
+  // CLAIM MODE: claims are permanent, and there is nobody to kill because enemy
+  // land is impassable — you can never be standing on someone else's ground.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", raidingAllowed: false });
+  g.grid.fill(OPEN);
+  paint(g, 0, 10, 10, 20, 20);
+  const held = cellsOf(g, "a");
+  place(g, 1, 9, 15, DIRS.right);
+  place(g, 0, 30, 30, DIRS.right);
+  for (let i = 0; i < 20; i++) step(g);
+  t("claim mode: a claim is permanent", cellsOf(g, "a") >= held, [held, cellsOf(g, "a")]);
+  t("claim mode: the raider never gets in", g.players[1].at.x === 9, g.players[1].at);
+  t("claim mode: nobody is killed", g.players.every((p) => p.deaths === 0),
+    g.players.map((p) => p.deaths));
+}
+{
+  // RAID MODE: the same setup, and now the ground genuinely changes hands.
+  const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", raidingAllowed: true });
+  g.grid.fill(OPEN);
+  paint(g, 0, 10, 10, 20, 20);
+  place(g, 1, 9, 15, DIRS.right);
+  // Park the owner: left free they walk onto open ground and GAIN cells faster
+  // than the raider takes them, which hides the loss.
+  place(g, 0, 30, 30, DIRS.right);
+  g.players[0].stallTicks = 9_999;
+  const held = cellsOf(g, "a");
+  for (let i = 0; i < 20; i++) step(g);
+  t("raid mode: the raider gets in", g.players[1].at.x > 9, g.players[1].at);
+  t("raid mode: the owner loses ground", cellsOf(g, "a") < held, [held, cellsOf(g, "a")]);
+}
+
+// ---------- catching a raider is actually POSSIBLE ----------
+//
+// This is the mechanic the respawn timer exists for, and it was broken in three
+// separate ways before these tests pinned it down:
+//
+//  1. A stern chase could never connect. Everyone moves one cell per tick, so a
+//     defender directly behind a raider never closes the gap. Only a same-cell
+//     collision counted, which in a chase never happens.
+//  2. Ownership was read from the live grid. A raider claims each cell as they
+//     enter it, so within a few ticks the ground under them read as THEIRS and no
+//     catch registered however close the defender got.
+//  3. Once that was judged by neighbourhood instead, the test was symmetric — both
+//     players are surrounded by the owner's land during a chase — so the DEFENDER
+//     died on their own ground, the exact opposite of the rule.
+{
+  const aLand = (g: TerritoryState) => {
+    for (let y = 10; y <= 30; y++) for (let x = 10; x <= 30; x++) {
+      g.grid[idxIn(g.cols, x, y)] = ownerOf(0);
+    }
+  };
+  const play = (setup: (g: TerritoryState) => void, ticks = 40) => {
+    const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", raidingAllowed: true });
+    g.grid.fill(OPEN);
+    setup(g);
+    for (let i = 0; i < ticks && isAlive(g.players[0]) && isAlive(g.players[1]); i++) step(g);
+    return g;
+  };
+
+  // The owner chases a raider through their own land and CATCHES them.
+  const chase = play((g) => {
+    aLand(g);
+    place(g, 1, 20, 20, DIRS.right);   // raider, running
+    place(g, 0, 17, 20, DIRS.right);   // owner, chasing from behind
+  });
+  t("an owner CAN catch a raider in a stern chase", !isAlive(chase.players[1]),
+    [isAlive(chase.players[0]), isAlive(chase.players[1])]);
+  t("the owner survives it", isAlive(chase.players[0]));
+  t("the kill is credited to the owner", chase.players[0].kills === 1, chase.players[0].kills);
+  t("the raider is not credited a kill", chase.players[1].kills === 0);
+
+  // Two players running each other down on OPEN ground: nothing happens.
+  const open = play((g) => {
+    place(g, 1, 20, 20, DIRS.right);
+    place(g, 0, 19, 20, DIRS.right);
+  });
+  t("a chase on open ground kills nobody",
+    isAlive(open.players[0]) && isAlive(open.players[1]),
+    [open.players[0].deaths, open.players[1].deaths]);
+
+  // The OWNER being chased through their OWN land must not die.
+  const reverse = play((g) => {
+    aLand(g);
+    place(g, 0, 20, 20, DIRS.right);   // owner, running
+    place(g, 1, 17, 20, DIRS.right);   // raider, chasing
+  });
+  t("the owner does NOT die on their own ground", isAlive(reverse.players[0]),
+    reverse.players[0].deaths);
+
+  // Nobody near anybody: no spontaneous deaths.
+  const alone = play((g) => {
+    aLand(g);
+    place(g, 0, 15, 15, DIRS.right);
+    place(g, 1, 37, 37, DIRS.right);
+  });
+  t("players far apart never die", alone.players.every((p) => p.deaths === 0),
+    alone.players.map((p) => p.deaths));
+}
+
+
+// ---------- you can only defend land you genuinely HOLD ----------
+//
+// A consequence of judging "inside my territory" by neighbourhood: a one-cell path
+// traced across the map is not defensible. Deliberate, and in the raider's favour —
+// territory has to be held, not merely outlined. Pinned here because it is the kind
+// of rule that gets "fixed" by someone who thinks it's a bug.
+{
+  const trial = (paintIt: (g: TerritoryState) => void) => {
+    const g = createGame(["a", "b"], { rng: fixedRng, phase: "playing", raidingAllowed: true });
+    g.grid.fill(OPEN);
+    paintIt(g);
+    place(g, 1, 20, 20);                    // victim, parked
+    g.players[1].stallTicks = 99_999;
+    place(g, 0, 17, 20, DIRS.right);        // owner, walking onto them
+    for (let i = 0; i < 15 && isAlive(g.players[1]); i++) step(g);
+    return !isAlive(g.players[1]);
+  };
+
+  t("a solid block CAN be defended",
+    trial((g) => {
+      for (let y = 10; y <= 30; y++) for (let x = 10; x <= 30; x++) {
+        g.grid[idxIn(g.cols, x, y)] = ownerOf(0);
+      }
+    }));
+  t("a 3-wide corridor CAN be defended",
+    trial((g) => {
+      for (let y = 19; y <= 21; y++) for (let x = 10; x <= 30; x++) {
+        g.grid[idxIn(g.cols, x, y)] = ownerOf(0);
+      }
+    }));
+  t("a 1-cell path CANNOT be defended — outlining isn't holding",
+    !trial((g) => {
+      for (let x = 10; x <= 30; x++) g.grid[idxIn(g.cols, x, 20)] = ownerOf(0);
+    }));
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

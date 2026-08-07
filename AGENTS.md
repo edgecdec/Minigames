@@ -253,6 +253,12 @@ Adding one:
   needs a stable anon id; generating one per `join_room` seats the same browser
   as several players and the room waits forever on people who don't exist. This
   was a real bug — the browser test caught it after the protocol test didn't.
+- **"Am I on your land?" is a neighbourhood question, not a single cell.** In Land
+  Grab a raider claims each cell as they enter it, so the ground under them reads as
+  THEIRS within a tick and a defender could stand on the same square with no kill
+  registering. Judge by a majority of the 8 neighbours, against the ownership
+  snapshot from the start of the tick. Consequence: land must be ~3+ cells thick to
+  be defensible, which is deliberate — territory has to be held, not outlined.
 - **A flood fill from the border needs a border it can start from.** Land Grab
   seeds its enclosure fill on the board edge. On a shaped map every edge cell is
   wall, so treating walls as boundary left the fill with no seed, every playable

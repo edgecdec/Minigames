@@ -258,6 +258,13 @@ Adding one:
   holding nothing. Where logic.ts uses a Set for convenience, server.js derives
   the same answer from the grid instead. Anything that must survive a deploy has
   to be a plain array, object, or number.
+- **A path that charges a clock mid-turn must remember what it charged.** Double It
+  deducts on a wrong answer and on a pause, then re-bases `turnStartedAt`. The
+  settle only saw `now - turnStartedAt`, so every second burned guessing came off
+  the answerer and reached NOBODY — opponents silently lost ~85% of the time they
+  were owed. `turnSpentMs` accumulates it; the settle takes a separate `chargeMs`
+  (what is left to deduct) and `potMs` (the whole turn). The abyss comes out once
+  per TURN, not per attempt, or several misses would drain the table repeatedly.
 - **Round timers are COUNTS, not deadlines.** Land Grab stores `ticksLeft` and
   decrements it, rather than storing an end timestamp. A deadline would let a pause
   or a deploy silently eat the whole round — the opposite of what pausing is for.

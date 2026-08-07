@@ -134,6 +134,91 @@ if (lifter && preLift.phase === "playing") {
     JSON.stringify(others.map((o) => [Math.round(o.ms), Math.round(clockOf(post, o.u))])));
 }
 
+// ---------- A MISS MUST NOT SWALLOW THE OPPONENTS' TIME ----------
+// server.js keeps its own copy of these rules (it loads outside the webpack
+// build), so this has to be asserted against the SERVER, not just logic.ts.
+//
+// The bug: a wrong answer charged the clock and re-based turnStartedAt, so the
+// eventual correct answer only shared the LAST attempt. Time burned guessing came
+// off the answerer and reached nobody.
+//
+// Two traps this section is shaped around:
+//   1. It must run AFTER the first rotation. While the cap is on, opponents are
+//      held at their starting clock, so a gain of 0 is correct and hides the bug.
+//   2. publicState projects the ON-TURN player's clock live. Once the answer
+//      lands, the next player is already burning time — so the foe who happens to
+//      be next reads LOW through no fault of the payout. Compare the foe who is
+//      NOT on turn; an earlier version of this test compared both and "found" a
+//      discrepancy that was purely the drain.
+{
+  let g = cs[0].game();
+  if (g.phase === "playing" && g.firstRotationDone) {
+    const who = cs.find((c) => c.id === g.turnUserId);
+    const foes = g.players.filter((p) => p.userId !== who.id).map((p) => ({ u: p.userId, ms: p.ms }));
+    const abyssMs = g.settings.abyssSeconds * 1000;
+
+    // Two deliberate misses ~1s apart, then the right answer.
+    for (let i = 0; i < 2; i++) {
+      await wait(1000);
+      const live = cs[0].game();
+      who.s.emit("game_event", {
+        event: "answer",
+        data: { value: live.prompt * live.settings.multiplier + 1 },
+      });
+      await wait(500);
+    }
+    let mid = cs[0].game();
+    t("misses kept the turn", mid.turnUserId === who.id, String(mid.turnUserId));
+    t("misses were counted", mid.wrongThisTurn === 2, String(mid.wrongThisTurn));
+    t("misses funded nobody yet",
+      foes.every((f) => clockOf(mid, f.u) <= f.ms + 50),
+      JSON.stringify(foes.map((f) => [Math.round(f.ms), Math.round(clockOf(mid, f.u))])));
+
+    await wait(1000);
+    mid = cs[0].game();
+    who.s.emit("game_event", {
+      event: "answer",
+      data: { value: mid.prompt * mid.settings.multiplier },
+    });
+    await wait(800);
+    const post = cs[0].game();
+
+    const shared = post.lastEvent?.sharedMs ?? 0;
+    const finalAttempt = post.lastEvent?.spentMs ?? 0;
+    // THE REGRESSION CHECK, and it needs no clock reading at all: the share must
+    // reflect the WHOLE turn (~4s of guessing plus the final attempt), not just
+    // the attempt that landed. Before the fix this was (final - abyss)/foes, which
+    // for a ~1s final attempt against a 1s abyss is essentially nothing.
+    const finalOnly = (finalAttempt - abyssMs) / foes.length;
+    t("the share reflects the whole turn, not the last attempt",
+      shared > finalOnly + 800, `shared ${Math.round(shared)} vs final-only ${Math.round(finalOnly)}`);
+    t("the guessing time was NOT swallowed", shared > 1_000, String(Math.round(shared)));
+
+    // The foe who is NOT next has a static clock, so it can be compared exactly.
+    const idle = foes.find((f) => f.u !== post.turnUserId);
+    if (idle) {
+      const gained = clockOf(post, idle.u) - idle.ms;
+      t("an off-turn opponent was paid exactly the reported share",
+        Math.abs(gained - shared) < 60, `${Math.round(gained)} vs ${Math.round(shared)}`);
+    }
+    t("the miss counter reset for the next turn", post.wrongThisTurn === 0,
+      String(post.wrongThisTurn));
+
+    // Exactly one abyss leaves the table per completed TURN, however many misses.
+    // Derived from the reported numbers rather than clock readings, since the
+    // answerer's own clock is live again the moment the turn moves on:
+    // pot = shared*foes + abyss, and that must be the WHOLE turn (~4s), which is
+    // comfortably more than the final attempt alone.
+    const potFromShare = shared * foes.length + abyssMs;
+    t("the pot covers the whole turn", potFromShare > finalAttempt + 2_000,
+      `pot ${Math.round(potFromShare)} vs final ${Math.round(finalAttempt)}`);
+    t("and not several abysses' worth", potFromShare < finalAttempt + 8_000,
+      `pot ${Math.round(potFromShare)}`);
+  } else {
+    t("skipped: duel ended before the miss case could run", false, g.phase);
+  }
+}
+
 cs.forEach((c) => c.s.disconnect());
 console.log("---", "pass:", pass, "fail:", fail);
 process.exit(fail ? 1 : 0);

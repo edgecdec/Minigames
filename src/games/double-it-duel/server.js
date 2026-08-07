@@ -54,6 +54,16 @@ function freshState(settings) {
     /** Misses on the current number, reset when it is finally solved. */
     wrongThisTurn: 0,
     /**
+     * Time already charged to the active player during THIS turn.
+     *
+     * A wrong answer charges the clock and re-bases `turnStartedAt`, and a pause
+     * banks the elapsed portion too — so by the time someone answers correctly,
+     * `now - turnStartedAt` covers only the last attempt. Sharing that alone
+     * swallowed every second burned on a wrong guess: it came off the answerer
+     * but reached nobody. Mirrors logic.ts.
+     */
+    turnSpentMs: 0,
+    /**
      * Distinct players who have finished a turn. Until everyone has had one,
      * clocks cannot exceed the starting amount — see settleClock.
      */
@@ -80,6 +90,9 @@ function startDuel(state, userIds) {
     turnIndex: 0,
     prompt: randomPrompt(),
     turnStartedAt: Date.now(),
+    // A rematch must not inherit the previous game's accumulator.
+    turnSpentMs: 0,
+    wrongThisTurn: 0,
     winner: null,
     lastEvent: null,
     round: 1,
@@ -116,11 +129,22 @@ function eliminate(state, index) {
 }
 
 /** spent comes off the answerer; spent - abyss splits among the living others. */
-function settleClock(state, spentMs) {
+/**
+ * Settle a completed turn.
+ *
+ * `chargeMs` is what still has to come off the answerer; `potMs` is the WHOLE
+ * turn, including time already deducted by earlier wrong guesses or a pause. They
+ * differ because those paths charge as they go, and the others are owed the whole
+ * turn rather than just the attempt that happened to land.
+ *
+ * The abyss comes out once per TURN, not per attempt — that keeps the termination
+ * guarantee without punishing one mistake several times. Mirrors logic.ts.
+ */
+function settleClock(state, chargeMs, potMs) {
   const abyssMs = state.settings.abyssSeconds * 1000;
   const active = state.players[state.turnIndex];
   const others = state.players.filter((p) => p.alive && p.userId !== active.userId);
-  const share = others.length > 0 ? (spentMs - abyssMs) / others.length : 0;
+  const share = others.length > 0 ? (potMs - abyssMs) / others.length : 0;
 
   // NO OVERFLOW DURING THE FIRST ROTATION.
   //
@@ -131,7 +155,8 @@ function settleClock(state, spentMs) {
   const firstRotationDone = (state.turnsTaken || 0) + 1 >= state.players.length;
   const startMs = state.settings.startSeconds * 1000;
 
-  active.ms -= spentMs;
+  // Only the unbanked remainder: wrong guesses already took their share.
+  active.ms -= chargeMs;
   others.forEach((p) => {
     // The floor stops a fast answer pushing someone negative before reapEmpty
     // sees them. Only a GAIN is capped — a drain below the start is still
@@ -155,6 +180,10 @@ function advance(state, newPrompt) {
   if (state.phase === "over") return;
   state.turnIndex = nextAliveIndex(state, state.turnIndex);
   if (newPrompt) state.prompt = randomPrompt();
+  // Cleared HERE so every path that ends a turn clears it — a timeout or an
+  // elimination would otherwise leak the dead player's time into the next pot.
+  state.turnSpentMs = 0;
+  state.wrongThisTurn = 0;
   state.turnStartedAt = Date.now();
   state.round += 1;
 }
@@ -347,6 +376,8 @@ module.exports = {
           const spent = Math.max(0, Date.now() - state.turnStartedAt);
           active.ms -= spent;
           state.wrongThisTurn = (state.wrongThisTurn || 0) + 1;
+          // Bank it so the eventual correct answer still shares this time out.
+          state.turnSpentMs = (state.turnSpentMs || 0) + spent;
           state.lastEvent = {
             userId: ctx.userId,
             kind: "wrong",
@@ -383,7 +414,9 @@ module.exports = {
           (p) => p.alive && p.userId !== active.userId,
         ).length;
 
-        settleClock(state, spentMs);
+        // The whole turn funds the table, not just the attempt that landed.
+        const potMs = (state.turnSpentMs || 0) + spentMs;
+        settleClock(state, spentMs, potMs);
         active.solved += 1;
         state.turnsTaken = (state.turnsTaken || 0) + 1;
         state.wrongThisTurn = 0;
@@ -393,7 +426,7 @@ module.exports = {
           prompt: state.prompt,
           answer: value,
           spentMs,
-          sharedMs: others > 0 ? (spentMs - abyssMs) / others : 0,
+          sharedMs: others > 0 ? (potMs - abyssMs) / others : 0,
         };
 
         reapEmpty(state);
@@ -448,7 +481,12 @@ module.exports = {
       // Pausing must never change who is alive. Leave a sliver on the clock and
       // let the player spend it once they are actually back and playing.
       const MIN_LEFT = 250;
+      const before = active.ms;
       active.ms = Math.max(MIN_LEFT, active.ms - spent);
+      // Whatever the pause actually charged has to reach the opponents when the
+      // turn eventually settles, exactly like a wrong guess. Using `spent` would
+      // over-credit when the MIN_LEFT floor bit.
+      state.turnSpentMs = (state.turnSpentMs || 0) + (before - active.ms);
     }
     state.turnStartedAt = null;
     stopTimer(state);

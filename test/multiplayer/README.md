@@ -65,6 +65,11 @@ The suites are shaped to prevent each one:
 - **Don't disconnect clients before triggering a drain.** The sweeper can reap a
   room as empty first, so nothing gets saved. A real deploy kills the *server*
   while clients stay connected — test that.
+- **The ON-TURN player's clock is projected live — and so is the next player's the
+  instant a turn ends.** A test compared both opponents' gains after an answer and
+  "found" one short by 800ms; that foe was simply next up and already burning time.
+  Compare the opponent who is NOT on turn, or assert on `lastEvent.sharedMs`, which
+  is static.
 - **Never assert on a live clock as if it were static.** The player on turn is
   burning time as you read it. Compare only players who aren't on the clock, or
   compare turn boundaries.

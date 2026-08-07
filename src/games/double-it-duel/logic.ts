@@ -83,6 +83,16 @@ export interface DuelState {
   /** Misses on the current number; reset when it is finally solved. */
   wrongThisTurn: number;
   /**
+   * Time already charged to the active player during THIS turn.
+   *
+   * A wrong answer charges the clock and re-bases `turnStartedAt`, and a pause
+   * banks the elapsed portion too — so by the time someone finally answers
+   * correctly, `now - turnStartedAt` covers only the last attempt. Sharing that
+   * alone quietly swallowed every second burned on a wrong guess: it came off the
+   * answerer but reached nobody. This accumulator is what the others are owed.
+   */
+  turnSpentMs: number;
+  /**
    * How many DISTINCT players have finished a turn.
    *
    * Until everyone has had one, clocks are capped at the starting amount. In the
@@ -120,6 +130,7 @@ export function createDuel(
     winner: null,
     lastEvent: null,
     wrongThisTurn: 0,
+    turnSpentMs: 0,
     turnsTaken: 0,
     round: 1,
   };
@@ -186,11 +197,23 @@ function eliminate(state: DuelState, index: number): DuelState {
  * `spent` comes off the answerer; `spent - abyss` is divided among the other
  * LIVING players. A fast answer makes that negative, draining everyone else.
  */
-function settleClock(state: DuelState, spentMs: number): DuelState {
+/**
+ * Settle a completed turn.
+ *
+ * `chargeMs` is what still has to come off the answerer's clock; `potMs` is the
+ * WHOLE turn, including time already charged by earlier wrong guesses or by a
+ * pause. They differ because those paths deduct as they go, and the others are
+ * owed the whole turn rather than just the final attempt.
+ *
+ * The abyss is taken once per turn, not once per attempt — that keeps the
+ * termination guarantee (exactly `abyss` ms leaves the table per completed turn)
+ * without punishing the same mistake repeatedly.
+ */
+function settleClock(state: DuelState, chargeMs: number, potMs: number): DuelState {
   const abyssMs = state.settings.abyssSeconds * 1000;
   const active = state.players[state.turnIndex];
   const others = state.players.filter((p) => p.alive && p.userId !== active.userId);
-  const pot = spentMs - abyssMs;
+  const pot = potMs - abyssMs;
   const share = others.length > 0 ? pot / others.length : 0;
 
   // NO OVERFLOW DURING THE FIRST ROTATION.
@@ -207,7 +230,8 @@ function settleClock(state: DuelState, spentMs: number): DuelState {
     ...state,
     players: state.players.map((p) => {
       if (p.userId === active.userId) {
-        return { ...p, ms: p.ms - spentMs };
+        // Only the unbanked remainder: wrong guesses already took their share.
+        return { ...p, ms: p.ms - chargeMs };
       }
       if (!p.alive) return p;
       // A floor of 0 stops a fast answer pushing someone negative without
@@ -302,6 +326,8 @@ export function answer(
         p.userId === userId ? { ...p, ms: p.ms - spentMs } : p,
       ),
       wrongThisTurn: state.wrongThisTurn + 1,
+      // Bank it so the eventual correct answer still shares this time out.
+      turnSpentMs: state.turnSpentMs + spentMs,
       lastEvent: {
         userId,
         kind: "wrong",
@@ -336,7 +362,9 @@ export function answer(
     (p) => p.alive && p.userId !== active.userId,
   ).length;
 
-  let next = settleClock(state, spentMs);
+  // The whole turn funds the table, not just the attempt that happened to land.
+  const potMs = state.turnSpentMs + spentMs;
+  let next = settleClock(state, spentMs, potMs);
   next = {
     ...next,
     players: next.players.map((p) =>
@@ -345,13 +373,15 @@ export function answer(
     // Counts completed turns, so the first-rotation cap knows when to lift.
     turnsTaken: state.turnsTaken + 1,
     wrongThisTurn: 0,
+    // Fresh accumulator for the next turn.
+    turnSpentMs: 0,
     lastEvent: {
       userId,
       kind: "correct",
       prompt: state.prompt,
       answer: value,
       spentMs,
-      sharedMs: others > 0 ? (spentMs - abyssMs) / others : 0,
+      sharedMs: others > 0 ? (potMs - abyssMs) / others : 0,
     },
   };
 
@@ -372,6 +402,11 @@ function advance(
   return {
     ...state,
     turnIndex,
+    // Clear the accumulator HERE, so every path that ends a turn clears it — a
+    // timeout or an elimination would otherwise leak the dead player's spent time
+    // into the next player's pot.
+    turnSpentMs: 0,
+    wrongThisTurn: 0,
     prompt: newPrompt ? randomPrompt(rng) : state.prompt,
     turnStartedAt: now,
     round: state.round + 1,

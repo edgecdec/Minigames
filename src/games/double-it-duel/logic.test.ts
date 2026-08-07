@@ -280,5 +280,109 @@ const over: DuelState = { ...s, phase: "over" };
 t("answers ignored once over", answer(over, "a", target(over), 1_000, zero).state === over);
 t("expireTurn ignored once over", expireTurn(over, 99_999, zero) === over);
 
+// --- A WRONG ANSWER MUST NOT SWALLOW THE OPPONENTS' TIME ---
+//
+// The bug: a miss charges the answerer and re-bases `turnStartedAt`, so the
+// eventual correct answer only shared `now - turnStartedAt` — the last attempt.
+// Every second burned on a wrong guess came off the answerer and reached NOBODY.
+// Opponents silently lost time they were owed, which is worse than the reverse:
+// the pot is how this duel ends, so quietly shrinking it stalls the whole game.
+//
+// NOTE: every case here plays past the first rotation first. During rotation one
+// opponents are capped at their starting clock, so a gain of 0 is CORRECT there
+// and would mask the bug entirely — an earlier version of these tests "passed"
+// against the broken code for exactly that reason.
+
+/** Play one clean rotation so the first-rotation gain cap has lifted. */
+function pastFirstRotation(ids: string[], over: Partial<DuelSettings> = {}): DuelState {
+  let g = createDuel(ids, settings(over), 0, zero);
+  for (let i = 0; i < ids.length; i++) g = solve(g, 1_000);
+  return g;
+}
+
+{
+  const over = { startSeconds: 30, abyssSeconds: 1 };
+
+  // Baseline: one clean 9s answer with two opponents, cap already lifted.
+  let clean = pastFirstRotation(["a", "b", "c"], over);
+  t("the cap has lifted", clean.turnsTaken >= 3, String(clean.turnsTaken));
+  const whose = activePlayer(clean)!.userId;
+  const others = ["a", "b", "c"].filter((id) => id !== whose);
+  const cleanBefore = others.map((id) => ms(clean, id));
+  clean = solve(clean, 9_000);
+  const cleanGain = ms(clean, others[0]) - cleanBefore[0];
+  t("baseline: a 9s answer funds each opponent (9-1)/2", Math.round(cleanGain) === 4_000,
+    String(cleanGain));
+
+  // The same 9 seconds, split across two wrong guesses and then the right one.
+  let messy = pastFirstRotation(["a", "b", "c"], over);
+  messy = answer(messy, whose, target(messy) + 1, messy.turnStartedAt + 3_000, zero).state;
+  messy = answer(messy, whose, target(messy) + 1, messy.turnStartedAt + 4_000, zero).state;
+  messy = answer(messy, whose, target(messy), messy.turnStartedAt + 2_000, zero).state;
+
+  t("the answerer pays the same 9s either way",
+    ms(messy, whose) === ms(clean, whose), `${ms(messy, whose)} vs ${ms(clean, whose)}`);
+  t("OPPONENTS GET THE SAME TIME whether or not you missed first",
+    ms(messy, others[0]) === ms(clean, others[0]),
+    `${ms(messy, others[0])} vs ${ms(clean, others[0])}`);
+  t("...and so does the third player",
+    ms(messy, others[1]) === ms(clean, others[1]),
+    `${ms(messy, others[1])} vs ${ms(clean, others[1])}`);
+  t("the reported share matches what was handed out",
+    Math.round(messy.lastEvent!.sharedMs) === Math.round(cleanGain),
+    String(messy.lastEvent?.sharedMs));
+
+  // The abyss is charged ONCE per turn, not once per attempt — otherwise three
+  // misses would quietly drain 3x the intended amount off the table.
+  const total = messy.players.reduce((n, p) => n + p.ms, 0);
+  const cleanTotal = clean.players.reduce((n, p) => n + p.ms, 0);
+  t("exactly one abyss is taken per turn, however many misses",
+    Math.round(total) === Math.round(cleanTotal), `${total} vs ${cleanTotal}`);
+}
+{
+  // A miss must still fund nobody at the moment it happens: the fix must not turn
+  // a wrong guess into an immediate payout.
+  const s2 = createDuel(["a", "b"], settings({ startSeconds: 30, abyssSeconds: 1 }), 0, zero);
+  const missed = answer(s2, "a", target(s2) + 1, s2.turnStartedAt + 5_000, zero).state;
+  t("a miss pays out nothing at the time", ms(missed, "b") === 30_000,
+    String(ms(missed, "b")));
+  t("but it is remembered for the settle", missed.turnSpentMs === 5_000,
+    String(missed.turnSpentMs));
+}
+{
+  // A timeout must NOT leak the dead player's spent time into the next pot.
+  let g = createDuel(["a", "b", "c"], settings({ startSeconds: 10, abyssSeconds: 1 }), 0, zero);
+  g = answer(g, "a", target(g) + 1, g.turnStartedAt + 4_000, zero).state; // miss, 4s banked
+  t("time is banked mid-turn", g.turnSpentMs === 4_000, String(g.turnSpentMs));
+  g = answer(g, "a", -1, g.turnStartedAt + 60_000, zero).state;           // times out
+  t("a timeout clears the accumulator", g.turnSpentMs === 0, String(g.turnSpentMs));
+  t("and the turn moved on", activePlayer(g)?.userId !== "a", activePlayer(g)?.userId);
+  t("the eliminated player funded nobody", ms(g, "b") === 10_000, String(ms(g, "b")));
+}
+{
+  // Many misses in a row, past the cap: one abyss, and the answerer pays the true
+  // total rather than only the final attempt.
+  let g = pastFirstRotation(["a", "b"], { startSeconds: 60, abyssSeconds: 2 });
+  const who = activePlayer(g)!.userId;
+  const foe = who === "a" ? "b" : "a";
+  const mineBefore = ms(g, who);
+  const foeBefore = ms(g, foe);
+  const tableBefore = g.players.reduce((n, p) => n + p.ms, 0);
+
+  for (let i = 0; i < 5; i++) {
+    g = answer(g, who, target(g) + 1, g.turnStartedAt + 1_000, zero).state;
+  }
+  t("five misses banked five seconds", g.turnSpentMs === 5_000, String(g.turnSpentMs));
+  g = answer(g, who, target(g), g.turnStartedAt + 1_000, zero).state;
+
+  t("the answerer paid all 6 seconds", mineBefore - ms(g, who) === 6_000,
+    String(mineBefore - ms(g, who)));
+  t("the opponent got 6 - 2 = 4", ms(g, foe) - foeBefore === 4_000,
+    String(ms(g, foe) - foeBefore));
+  t("the table lost exactly one abyss",
+    tableBefore - g.players.reduce((n, p) => n + p.ms, 0) === 2_000,
+    String(tableBefore - g.players.reduce((n, p) => n + p.ms, 0)));
+}
+
 console.log("---", "pass:", pass, "fail:", fail);
 if (fail) process.exit(1);

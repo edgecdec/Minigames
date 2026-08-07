@@ -67,6 +67,21 @@ export const MULTIPLAYER_GAMES: MultiplayerGameMeta[] = [
       "time until everyone has had one turn. Run out and you're eliminated; last one left wins.",
     status: "live",
   },
+  {
+    slug: "territory",
+    title: "Land Grab",
+    blurb: "Claim ground by looping out and back. Biggest area when time runs out wins.",
+    icon: "🧱",
+    minPlayers: 2,
+    howToPlay:
+      "You're safe on your own land and can drive into open ground. Leaving your " +
+      "territory draws a trail; get back to your own land and everything the loop " +
+      "encircles becomes yours, including any pocket sealed inside it. Cut someone's " +
+      "trail while they're out and they lose the lot — trail, territory, all of it — " +
+      "so defending your ground is worth doing. You can raid enemy land, but you crawl " +
+      "while you're standing on it. Most ground when the clock hits zero wins.",
+    status: "live",
+  },
 ];
 
 export function getMultiplayerGame(slug: string): MultiplayerGameMeta | undefined {

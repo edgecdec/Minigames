@@ -255,5 +255,65 @@ await start("snake");
 
 await stop();
 wipeDb();
+// ---------- 5. Land Grab: held ground survives (no Set in state) ----------
+console.log("=== 5. territory across a restart ===");
+wipeDb();
+await start("terr");
+{
+  const H = crypto.randomUUID(), G = crypto.randomUUID();
+  const a = client(H), b = client(G);
+  await wait(800);
+  a.s.emit("join_room", { roomCode: "NEW", name: "Ana" });
+  await wait(500);
+  const code = a.joined.roomCode;
+  b.s.emit("join_room", { roomCode: code, name: "Ben" });
+  await wait(500);
+  a.s.emit("select_game", { game: "territory" });
+  await wait(400);
+  a.s.emit("game_event", { event: "settings", data: { mapName: "The Pillar", roundSeconds: 300 } });
+  await wait(300);
+  a.s.emit("game_event", { event: "start" });
+  // Past the 3-2-1, which runs on wall-clock seconds.
+  await wait(4500);
+  t("territory is playing", a.game()?.phase === "playing", String(a.game()?.phase));
+  for (const dir of [{ x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }]) {
+    a.s.emit("game_event", { event: "turn", data: { dir } });
+    await wait(600);
+  }
+  const cells = a.game()?.players?.map((p) => p.cells);
+  const mapName = a.game()?.mapName;
+  const clock = a.game()?.secondsLeft;
+  const tick = a.game()?.tick;
+
+  // Stay connected: a real deploy kills the server, not the clients.
+  await stop();
+  await start("terr2");
+  await wait(2500);
+  [a, b].forEach((c) => { if (!c.s.connected) c.s.connect(); });
+  await wait(1200);
+  a.s.emit("join_room", { roomCode: code, name: "Ana" });
+  await wait(1800);
+
+  t("the territory room came back", a.last()?.game === "territory", String(a.last()?.game));
+  t("the chosen map survived", a.game()?.mapName === mapName,
+    `${mapName} -> ${a.game()?.mapName}`);
+  // The reason this suite covers territory at all: its state deliberately holds no
+  // Set, because a Set serialises to {} and everyone would return owning nothing.
+  t("held ground survived the restart",
+    JSON.stringify(a.game()?.players?.map((p) => p.cells)) === JSON.stringify(cells),
+    `${JSON.stringify(cells)} -> ${JSON.stringify(a.game()?.players?.map((p) => p.cells))}`);
+  t("the run-length grid still covers the board",
+    (a.game()?.grid ?? []).reduce((n, v, i) => (i % 2 ? n + v : n), 0) ===
+      a.game()?.cols * a.game()?.rows);
+  // ticksLeft is a COUNT, not a deadline, so downtime can't eat the round.
+  t("the round clock did not drain while the server was down",
+    Math.abs((a.game()?.secondsLeft ?? 0) - (clock ?? 0)) <= 2,
+    `${clock} -> ${a.game()?.secondsLeft}`);
+  t("the tick did not advance while down", a.game()?.tick === tick,
+    `${tick} -> ${a.game()?.tick}`);
+  a.s.disconnect(); b.s.disconnect();
+  await stop();
+}
+
 console.log("---", "pass:", pass, "fail:", fail);
 process.exit(fail ? 1 : 0);

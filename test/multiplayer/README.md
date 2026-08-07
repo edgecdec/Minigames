@@ -15,6 +15,7 @@ PORT=3070 node test/multiplayer/duel-rules.test.mjs
 PORT=3050 node test/multiplayer/pause.test.mjs
 PORT=3070 node test/multiplayer/switch-games.test.mjs
 PORT=3086 node test/multiplayer/codenames-flow.test.mjs
+PORT=3090 node test/multiplayer/territory.test.mjs
 
 # these start and stop the server themselves — do NOT have one running
 PORT=3080 node test/multiplayer/persistence.test.mjs
@@ -39,8 +40,9 @@ and nothing reclaims its seat.
 | `duel-rules.test.mjs` | Double It Duel: wrong answers keep the turn, misses fund nobody, the first-rotation clock cap and its lifting |
 | `pause.test.mjs` | Host pause/resume across all three games, and that a paused room refuses game events |
 | `persistence.test.mjs` | Full restart: SIGINT → snapshot → boot → restore → reclaim seats → resume → keep playing |
-| `persistence-edges.test.mjs` | Lobby-only rooms aren't saved, finished games restore as finished, stale snapshots are dropped, Snake's tick freezes and resumes |
+| `persistence-edges.test.mjs` | Lobby-only rooms aren't saved, finished games restore as finished, stale snapshots are dropped, Snake's tick freezes and resumes, Land Grab's held ground survives |
 | `switch-games.test.mjs` | Back-to-lobby keeps the room, host-only, and the room win tally surviving game switches |
+| `territory.test.mjs` | Land Grab: registration, RLE grid decode, host-only settings, wall-clock countdown, tick loop, claiming, pause, round end |
 | `codenames-flow.test.mjs` | Rounds auto-advance with no host input, word authorship, and the server's duplicated copy of the rules |
 | `one-browser-one-player.test.mjs` | `/api/identity`, two tabs sharing one seat, closing a duplicate tab, and wins surviving a restart |
 
@@ -79,3 +81,10 @@ The suites are shaped to prevent each one:
   there and hides one that is.
 - **Honour `PORT`, not just `BASE`.** One suite read only `BASE`, so a `PORT=` run
   silently talked to the default port and failed on a null join.
+- **Confirm the server you just started is YOURS.** A stale process holding the
+  port makes the new one die with EADDRINUSE while `curl` still returns 200 — so a
+  brand-new game looks unregistered and its tests fail for no visible reason.
+  `grep "Multiplayer ready" ` the log and check your game is listed.
+- **Break loops on an element, not on page text.** A wait-for-the-round-to-end loop
+  keyed on the word "draw" exited immediately, because the help text says "draw a
+  trail". Waiting for the Rematch *button* is unambiguous.

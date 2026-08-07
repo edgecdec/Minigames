@@ -253,6 +253,14 @@ Adding one:
   needs a stable anon id; generating one per `join_room` seats the same browser
   as several players and the room waits forever on people who don't exist. This
   was a real bug — the browser test caught it after the protocol test didn't.
+- **No `Set` or `Map` in a game's state.** Room snapshots are JSON, and a `Set`
+  serialises to `{}` — a paused Land Grab room would come back with everyone
+  holding nothing. Where logic.ts uses a Set for convenience, server.js derives
+  the same answer from the grid instead. Anything that must survive a deploy has
+  to be a plain array, object, or number.
+- **Round timers are COUNTS, not deadlines.** Land Grab stores `ticksLeft` and
+  decrements it, rather than storing an end timestamp. A deadline would let a pause
+  or a deploy silently eat the whole round — the opposite of what pausing is for.
 - **Don't guess at English morphology.** Codenames matches on the word players
   actually typed: casing, padding, punctuation and accents are folded, nothing is
   stemmed. A suffix stripper looked helpful and was wrong both ways — it merged

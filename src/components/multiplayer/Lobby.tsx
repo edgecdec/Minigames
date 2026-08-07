@@ -12,6 +12,7 @@ import PauseBanner from "@/components/multiplayer/PauseBanner";
 import CodenamesRoom, { type CodenamesPublicState } from "@/games/codenames/CodenamesRoom";
 import SnakeDuelRoom, { type DuelPublicState } from "@/games/snake-duel/SnakeDuelRoom";
 import DoubleItDuelRoom, { type DuelPublicState as DoubleItDuelState } from "@/games/double-it-duel/DoubleItDuelRoom";
+import TerritoryRoom, { type TerritoryPublicState } from "@/games/territory/TerritoryRoom";
 import { useRoom } from "@/lib/useRoom";
 import { useLocalStorage } from "@/lib/useLocalStorage";
 
@@ -115,6 +116,17 @@ export default function Lobby() {
         return (
           <DoubleItDuelRoom
             state={state.gameState as DoubleItDuelState}
+            players={state.players}
+            userId={room.userId}
+            isHost={room.isHost}
+            send={room.send}
+            roomWins={state.roomWins}
+          />
+        );
+      case "territory":
+        return (
+          <TerritoryRoom
+            state={state.gameState as TerritoryPublicState}
             players={state.players}
             userId={room.userId}
             isHost={room.isHost}

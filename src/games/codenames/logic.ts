@@ -60,7 +60,15 @@ export function drawStartingWords(count: number, rng: () => number = Math.random
   return out;
 }
 
-export type Phase = "lobby" | "submitting" | "reveal" | "won";
+/**
+ * There is deliberately NO "reveal" phase.
+ *
+ * A missed round used to stop on a reveal screen waiting for the host to press
+ * "Next round". The information that screen carried — who said what — now sits
+ * above the words themselves, so the pause bought nothing and just added a click
+ * between every round.
+ */
+export type Phase = "lobby" | "submitting" | "won";
 
 export interface CodenamesState {
   phase: Phase;
@@ -77,8 +85,17 @@ export interface CodenamesState {
   round: number;
   /** Set when the round is won — the word everyone agreed on. */
   winningWord: string | null;
-  /** Populated at reveal so clients can show who said what. */
+  /** Populated when a round resolves, so clients can show who said what. */
   lastReveal: { userId: string; word: string }[] | null;
+  /**
+   * Who said each word on screen, keyed by the displayed (upper-case) word.
+   *
+   * A list rather than a single id because duplicate submissions collapse into
+   * one word — two players agreeing is exactly how the prompt narrows, and both
+   * of them deserve the credit. Empty for the opening prompt, which is drawn
+   * from the pool and so has no author.
+   */
+  authors: Record<string, string[]>;
   /**
    * Cumulative sync points per player: each round you score one point for every
    * OTHER player who said your word. Purely for bragging rights — it does not
@@ -147,6 +164,8 @@ export function createState(
     used: words.map(normalizeWord),
     submissions: {},
     round: 1,
+    // Nobody said the opening words; they came from the pool.
+    authors: {},
     winningWord: null,
     lastReveal: null,
     syncPoints: {},
@@ -264,6 +283,13 @@ export function resolveRound(
   const roundSync = roundSyncPoints(state.submissions, playerIds);
   const syncPoints = addSync(state.syncPoints, roundSync);
 
+  // Group the authors by the word they landed on, so the board can name them.
+  const authors: Record<string, string[]> = {};
+  for (const e of entries) {
+    const shown = e.word.toUpperCase();
+    (authors[shown] ||= []).push(e.userId);
+  }
+
   if (distinct.length === 1) {
     return {
       ...state,
@@ -272,6 +298,7 @@ export function resolveRound(
       // board down to one word, so leaving the old prompt up hides the payoff.
       words: [distinct[0].toUpperCase()],
       prevWordCount: state.words.length,
+      authors,
       winningWord: distinct[0].toUpperCase(),
       lastReveal: reveal,
       used: [...state.used, distinct[0]],
@@ -282,9 +309,11 @@ export function resolveRound(
 
   return {
     ...state,
-    phase: "reveal",
+    // Straight back to submitting: no reveal screen, no host click between rounds.
+    phase: "submitting",
     words: distinct.map((w) => w.toUpperCase()),
     prevWordCount: state.words.length,
+    authors,
     submissions: {},
     used: [...state.used, ...distinct],
     round: state.round + 1,
@@ -316,12 +345,6 @@ export function syncExtremes(syncPoints: Record<string, number>): {
     high,
     low,
   };
-}
-
-/** Move from reveal into the next submitting phase. */
-export function continueRound(state: CodenamesState): CodenamesState {
-  if (state.phase !== "reveal") return state;
-  return { ...state, phase: "submitting", lastReveal: state.lastReveal };
 }
 
 export function startGame(state: CodenamesState): CodenamesState {

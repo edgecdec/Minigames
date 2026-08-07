@@ -15,7 +15,7 @@ import type { RoomGameProps, RoomPlayer } from "@/lib/useRoom";
 
 /** Mirrors publicState() in ./server.js — submissions stay hidden until reveal. */
 export interface CodenamesPublicState {
-  phase: "lobby" | "submitting" | "reveal" | "won";
+  phase: "lobby" | "submitting" | "won";
   words: string[];
   round: number;
   winningWord: string | null;
@@ -25,6 +25,11 @@ export interface CodenamesPublicState {
   waitingOn: number;
   /** Session-long tally: a point per other player who said your word. */
   syncPoints: Record<string, number>;
+  /**
+   * Who said each word on screen, keyed by the word. Several authors when players
+   * agreed; empty for the opening prompt, which came from the pool.
+   */
+  authors: Record<string, string[]>;
   /** Points from the round just revealed. */
   lastRoundSync: Record<string, number> | null;
   /** Words on screen before this reveal, so we can say narrowed vs widened. */
@@ -38,7 +43,16 @@ export interface CodenamesPublicState {
  * The prompt words. Wraps and shrinks with the count, since a 6-player round can
  * legitimately have six words on screen before the group starts converging.
  */
-function PromptWords({ words }: { words: string[] }) {
+function PromptWords({
+  words,
+  authors,
+  nameFor,
+}: {
+  words: string[];
+  /** Word -> the players who submitted it. */
+  authors?: Record<string, string[]>;
+  nameFor: (userId: string) => string;
+}) {
   const many = words.length > 3;
   return (
     <Stack
@@ -49,8 +63,32 @@ function PromptWords({ words }: { words: string[] }) {
       sx={{ width: "100%", flexWrap: "wrap" }}
       useFlexGap
     >
-      {words.map((w, i) => (
+      {words.map((w, i) => {
+        // Several names when players agreed on the same word — that collapse is
+        // how the prompt narrows, so both authors are named. The opening prompt
+        // has none: it was drawn from the pool.
+        const said = authors?.[w] ?? [];
+        return (
         <Box key={`${w}-${i}`} sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Stack spacing={0.5} alignItems="center">
+            <Typography
+              variant="caption"
+              sx={{
+                color: said.length ? "text.secondary" : "transparent",
+                fontSize: "0.65rem",
+                maxWidth: 120,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {/*
+                Rendered transparent rather than omitted when nobody said the
+                word, so the opening prompt lines up with later rounds instead of
+                every card jumping down once authors appear.
+              */}
+              {said.length ? said.map(nameFor).join(" + ") : "\u00a0"}
+            </Typography>
           <Paper
             elevation={0}
             sx={{
@@ -74,11 +112,13 @@ function PromptWords({ words }: { words: string[] }) {
               {w}
             </Typography>
           </Paper>
+          </Stack>
           {i < words.length - 1 ? (
             <Typography sx={{ color: "text.secondary", fontWeight: 700 }}>+</Typography>
           ) : null}
         </Box>
-      ))}
+        );
+      })}
     </Stack>
   );
 }
@@ -197,6 +237,8 @@ export default function CodenamesRoom({
   const [word, setWord] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const iSubmitted = state.submitted.includes(userId);
+  const nameFor = (id: string) =>
+    id === userId ? "you" : (players.find((p) => p.id === id)?.name ?? "Player");
 
   // Clear the box between rounds and take focus back for the next guess.
   useEffect(() => {
@@ -225,7 +267,25 @@ export default function CodenamesRoom({
         <Typography variant="caption">{state.usedCount} used</Typography>
       </Stack>
 
-      <PromptWords words={state.words} />
+      <PromptWords words={state.words} authors={state.authors} nameFor={nameFor} />
+
+      {/*
+        The outcome of the round that just ended, shown WHILE the next one is
+        already open. This replaced a full reveal screen with a "Next round"
+        button: the names it existed to show now sit above each word, so stopping
+        the game to display them only added a click between every round.
+
+        Only from round 2 — on round 1 there is no previous round to report.
+      */}
+      {state.phase === "submitting" && state.round > 1 ? (
+        <Alert severity="info" sx={{ width: "100%", maxWidth: 340 }}>
+          {state.words.length < state.prevWordCount
+            ? `Closer — down to ${state.words.length} from ${state.prevWordCount}.`
+            : state.words.length > state.prevWordCount
+              ? `Scattered — back up to ${state.words.length} from ${state.prevWordCount}.`
+              : `Still ${state.words.length} words. Nobody converged.`}
+        </Alert>
+      ) : null}
 
       {state.phase === "lobby" ? (
         <Stack spacing={1.5} alignItems="center">
@@ -289,39 +349,6 @@ export default function CodenamesRoom({
         </Stack>
       ) : null}
 
-      {state.phase === "reveal" && state.lastReveal ? (
-        <Stack spacing={1.5} sx={{ width: "100%", maxWidth: 340 }} alignItems="center">
-          <Alert severity="info" sx={{ width: "100%" }}>
-            {state.words.length < state.prevWordCount
-              ? `Closer — down to ${state.words.length} from ${state.prevWordCount}.`
-              : state.words.length > state.prevWordCount
-                ? `Scattered — back up to ${state.words.length} from ${state.prevWordCount}.`
-                : `Still ${state.words.length} words. Nobody converged.`}
-          </Alert>
-          <Stack spacing={0.5} sx={{ width: "100%" }}>
-            {state.lastReveal.map((r) => (
-              <Stack key={r.userId} direction="row" justifyContent="space-between">
-                <Typography variant="body2" color="text.secondary">
-                  {players.find((p) => p.id === r.userId)?.name ?? "Player"}
-                </Typography>
-                <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                  {r.word}
-                </Typography>
-              </Stack>
-            ))}
-          </Stack>
-          {isHost ? (
-            <Button variant="contained" onClick={() => send("continue")}>
-              Next round
-            </Button>
-          ) : (
-            <Typography variant="caption" color="text.secondary">
-              Waiting for the host…
-            </Typography>
-          )}
-        </Stack>
-      ) : null}
-
       {/*
         Converging on one word is the win, so that's the moment worth marking.
         Keyed on game+round for two reasons: a room re-broadcasts its state on
@@ -355,7 +382,7 @@ export default function CodenamesRoom({
         </Stack>
       ) : null}
 
-      {state.phase === "reveal" || state.phase === "won" ? (
+      {state.phase === "won" || (state.phase === "submitting" && state.round > 1) ? (
         <SyncBoard
           syncPoints={state.syncPoints}
           lastRoundSync={state.lastRoundSync}

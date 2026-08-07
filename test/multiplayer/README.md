@@ -14,6 +14,7 @@ line of defence. These exist for the wiring around them.
 PORT=3070 node test/multiplayer/duel-rules.test.mjs
 PORT=3050 node test/multiplayer/pause.test.mjs
 PORT=3070 node test/multiplayer/switch-games.test.mjs
+PORT=3086 node test/multiplayer/codenames-flow.test.mjs
 
 # these start and stop the server themselves — do NOT have one running
 PORT=3080 node test/multiplayer/persistence.test.mjs
@@ -40,6 +41,7 @@ and nothing reclaims its seat.
 | `persistence.test.mjs` | Full restart: SIGINT → snapshot → boot → restore → reclaim seats → resume → keep playing |
 | `persistence-edges.test.mjs` | Lobby-only rooms aren't saved, finished games restore as finished, stale snapshots are dropped, Snake's tick freezes and resumes |
 | `switch-games.test.mjs` | Back-to-lobby keeps the room, host-only, and the room win tally surviving game switches |
+| `codenames-flow.test.mjs` | Rounds auto-advance with no host input, word authorship, and the server's duplicated copy of the rules |
 | `one-browser-one-player.test.mjs` | `/api/identity`, two tabs sharing one seat, closing a duplicate tab, and wins surviving a restart |
 
 ## Writing more of these — read this first

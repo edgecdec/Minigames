@@ -67,6 +67,8 @@ function freshState(playerCount) {
     // Prompt words are banned immediately: repeating one isn't a connection.
     used: words.map(normalizeWord),
     round: 1,
+    // Nobody said the opening words; they came from the pool.
+    authors: {},
     winningWord: null,
     lastReveal: null,
     // Cumulative "sync points": each round you score one point per OTHER player
@@ -116,6 +118,15 @@ function resolve(room, state) {
   const syncPoints = Object.assign({}, state.syncPoints);
   for (const id in roundSync) syncPoints[id] = (syncPoints[id] || 0) + roundSync[id];
 
+  // Who said each surviving word. A list, because duplicate submissions collapse
+  // into one word and both authors earned it.
+  const authors = {};
+  for (const e of entries) {
+    const shown = e.word.toUpperCase();
+    if (!authors[shown]) authors[shown] = [];
+    authors[shown].push(e.userId);
+  }
+
   if (distinct.length === 1) {
     return {
       ...state,
@@ -124,6 +135,7 @@ function resolve(room, state) {
       // word IS the goal, so leaving the old prompt up hides the payoff.
       words: [distinct[0].toUpperCase()],
       prevWordCount: state.words.length,
+      authors,
       winningWord: distinct[0].toUpperCase(),
       lastReveal: reveal,
       used: state.used.concat(distinct),
@@ -137,9 +149,12 @@ function resolve(room, state) {
   // them never saw. Duplicates collapsing is the mechanism of progress.
   return {
     ...state,
-    phase: "reveal",
+    // Straight back into submitting. There is no reveal phase: authorship now
+    // shows above each word, so a pause between rounds bought nothing but a click.
+    phase: "submitting",
     words: distinct.map((w) => w.toUpperCase()),
     prevWordCount: state.words.length,
+    authors,
     submissions: {},
     used: state.used.concat(distinct),
     round: state.round + 1,
@@ -169,6 +184,8 @@ module.exports = {
       round: state.round,
       winningWord: state.winningWord,
       lastReveal: state.lastReveal,
+      /** Who said each word on screen. Empty for the opening prompt. */
+      authors: state.authors || {},
       usedCount: state.used.length,
       syncPoints: state.syncPoints,
       lastRoundSync: state.lastRoundSync,
@@ -230,12 +247,6 @@ module.exports = {
         if (ids.length > 0 && ids.every((id) => id in state.submissions)) {
           ctx.setState(resolve(room, state));
         }
-        return true;
-      }
-
-      case "continue": {
-        if (!ctx.isHost || state.phase !== "reveal") return false;
-        ctx.setState({ ...state, phase: "submitting" });
         return true;
       }
 

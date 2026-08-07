@@ -8,7 +8,6 @@ import {
   submitWord,
   everyoneSubmitted,
   resolveRound,
-  continueRound,
   startGame,
   MAX_WORD_LENGTH,
 } from "./logic";
@@ -71,15 +70,15 @@ t("everyone submitted", everyoneSubmitted(s, ["u1", "u2"]));
 
 // --- mismatch feeds the next round ---
 let next = resolveRound(s, ["u1", "u2"]);
-t("mismatch -> reveal", next.phase === "reveal");
+t("mismatch goes straight back to submitting — no reveal phase",
+  next.phase === "submitting", next.phase);
 t("submitted words become the prompt", next.words.includes("BOIL") && next.words.includes("SHOWER"), next.words.join("/"));
 t("round advanced", next.round === 2);
 t("submissions cleared", Object.keys(next.submissions).length === 0);
-t("reveal shows who said what", (next.lastReveal ?? []).length === 2);
+t("still records who said what", (next.lastReveal ?? []).length === 2);
 t("both words now banned", next.used.includes("boil") && next.used.includes("shower"));
 
-next = continueRound(next);
-t("continue -> submitting", next.phase === "submitting");
+t("the next round is already open", next.phase === "submitting");
 
 // used words can't be replayed — Petisomon's rule
 t("cannot reuse a previous word", submitWord(next, "u1", "boiling").error !== undefined);
@@ -115,7 +114,7 @@ t("unanimous with 3 wins", resolveRound(allAgree, ["a", "b", "c"]).phase === "wo
 // --- guards ---
 t("submit outside submitting phase rejected", submitWord(createState(seeded), "u1", "x").error !== undefined);
 t("resolve with no submissions is a no-op", resolveRound(startGame(createState(seeded)), ["u1"]).phase === "submitting");
-t("continue outside reveal is a no-op", continueRound(win).phase === "won");
+t("a won game stays won", win.phase === "won");
 
 // --- N players: convergence is the progress signal ---
 let five = startGame(createState(seeded));
@@ -138,7 +137,7 @@ conv = submitWord(conv, "c", "cobalt").state;
 conv = submitWord(conv, "d", "cobalt").state;  // agrees with c
 const rConv = resolveRound(conv, ["a", "b", "c", "d"]);
 t("4 players, 2 opinions -> 2 words", rConv.words.length === 2, rConv.words.join("/"));
-t("reveal still shows all four players", (rConv.lastReveal ?? []).length === 4);
+t("still shows all four players", (rConv.lastReveal ?? []).length === 4);
 t("duplicates collapse rather than repeat",
   new Set(rConv.words).size === rConv.words.length);
 
@@ -150,7 +149,7 @@ near = submitWord(near, "c", "ember").state;
 near = submitWord(near, "d", "frost").state;
 const rNear = resolveRound(near, ["a", "b", "c", "d"]);
 t("3-of-4 agreement narrows to 2", rNear.words.length === 2, rNear.words.join("/"));
-t("not a win while anyone differs", rNear.phase === "reveal");
+t("not a win while anyone differs", rNear.phase === "submitting", rNear.phase);
 
 // Unanimous at any size wins outright.
 let big = startGame(createState(seeded));
@@ -165,7 +164,7 @@ let noRep = startGame(createState(seeded));
 noRep = submitWord(noRep, "a", "onyx").state;
 noRep = submitWord(noRep, "b", "pearl").state;
 noRep = submitWord(noRep, "c", "quartz").state;
-noRep = continueRound(resolveRound(noRep, ["a", "b", "c"]));
+noRep = resolveRound(noRep, ["a", "b", "c"]);
 t("all three prior answers barred",
   ["onyx", "pearl", "quartz"].every((w) => submitWord(noRep, "a", w).error !== undefined));
 t("a word on screen is barred too",
@@ -213,14 +212,12 @@ arc = submitWord(arc, "c", "beacon").state;
 arc = submitWord(arc, "d", "lantern").state;
 arc = resolveRound(arc, ["a", "b", "c", "d"]);
 t("4 words narrow to 3", arc.words.length === 3, arc.words.join("/"));
-arc = continueRound(arc);
 arc = submitWord(arc, "a", "torch").state;
 arc = submitWord(arc, "b", "torch").state;
 arc = submitWord(arc, "c", "torch").state;
 arc = submitWord(arc, "d", "flare").state;
 arc = resolveRound(arc, ["a", "b", "c", "d"]);
 t("3 words narrow to 2", arc.words.length === 2, arc.words.join("/"));
-arc = continueRound(arc);
 arc = submitWord(arc, "a", "ember").state;
 arc = submitWord(arc, "b", "ember").state;
 arc = submitWord(arc, "c", "ember").state;
@@ -269,7 +266,7 @@ t("different spellings still count as sync",
 t("the odd one out scores 0", syncRes.lastRoundSync?.c === 0);
 
 // Points accumulate across rounds.
-let acc = continueRound(syncRes);
+let acc = syncRes;
 acc = submitWord(acc, "a", "amber").state;
 acc = submitWord(acc, "b", "amber").state;
 acc = submitWord(acc, "c", "amber").state;
@@ -300,7 +297,6 @@ t("everyone level: most and least are all", (() => {
     });
     g5 = resolveRound(g5, ids5);
     trail.push(g5.words.length);
-    if (g5.phase === "reveal") g5 = continueRound(g5);
   };
 
   playRound(["alpha", "alpha", "alpha", "bravo", "charlie"]); // 3 distinct
@@ -341,3 +337,45 @@ t("same game and round yields a stable key", winKey(3, 4) === winKey(3, 4));
 
 console.log("---", "pass:", pass, "fail:", fail);
 if (fail) process.exit(1);
+
+// --- authorship: who put each word up ---
+// The reveal screen used to carry this. Now it sits above the words themselves,
+// which is what let the pause between rounds go away entirely.
+{
+  let a = startGame(createState(seeded, 3));
+  t("the opening prompt has no authors — it came from the pool",
+    Object.keys(a.authors).length === 0, JSON.stringify(a.authors));
+
+  a = submitWord(a, "p1", "anchor").state;
+  a = submitWord(a, "p2", "anchor").state;   // agrees with p1
+  a = submitWord(a, "p3", "compass").state;
+  a = resolveRound(a, ["p1", "p2", "p3"]);
+
+  t("every word on screen has an author",
+    a.words.every((w) => (a.authors[w] ?? []).length > 0),
+    JSON.stringify(a.authors));
+  t("agreeing players SHARE a word's authorship",
+    (a.authors["ANCHOR"] ?? []).slice().sort().join() === "p1,p2",
+    JSON.stringify(a.authors["ANCHOR"]));
+  t("a lone answer has exactly one author",
+    (a.authors["COMPASS"] ?? []).join() === "p3", JSON.stringify(a.authors["COMPASS"]));
+  t("authors are keyed by the DISPLAYED word",
+    Object.keys(a.authors).every((k) => k === k.toUpperCase()),
+    Object.keys(a.authors).join("/"));
+
+  // Authors must be REPLACED each round, not accumulated: a stale key would name
+  // someone next to a word they never said.
+  const before = Object.keys(a.authors).sort().join();
+  a = submitWord(a, "p1", "harbour").state;
+  a = submitWord(a, "p2", "harbour").state;
+  a = submitWord(a, "p3", "harbour").state;
+  a = resolveRound(a, ["p1", "p2", "p3"]);
+  t("a win records its authors too",
+    (a.authors["HARBOUR"] ?? []).length === 3, JSON.stringify(a.authors));
+  t("old authors are cleared, not merged",
+    Object.keys(a.authors).sort().join() !== before,
+    `${before} -> ${Object.keys(a.authors).sort().join()}`);
+  t("no author key survives for a word no longer on screen",
+    Object.keys(a.authors).every((w) => a.words.includes(w)),
+    `${Object.keys(a.authors).join("/")} vs ${a.words.join("/")}`);
+}

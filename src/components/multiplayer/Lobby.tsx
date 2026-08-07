@@ -33,20 +33,28 @@ export default function Lobby() {
    * from the URL straight afterwards: leaving it there means a refresh after
    * leaving would silently drag you back into the room you just left.
    */
-  const [linkCode, setLinkCode] = useState<string | null>(null);
-  const readLink = useRef(false);
-
-  useEffect(() => {
-    if (readLink.current) return;
-    readLink.current = true;
-    const params = new URLSearchParams(window.location.search);
-    const raw = params.get("room");
-    if (!raw) return;
+  const [linkCode] = useState<string | null>(() => {
+    // Lazy initialiser, so this runs during the FIRST render.
+    //
+    // Reading it in an effect was too late: RoomJoin had already mounted and
+    // seeded its own state from the (still empty) initialCode prop, and useState
+    // ignores later prop changes. An invitee with no saved name got a blank code
+    // box and had to type the code by hand — defeating the link entirely.
+    if (typeof window === "undefined") return null; // SSR pass
+    const raw = new URLSearchParams(window.location.search).get("room");
+    if (!raw) return null;
     const code = raw.trim().toUpperCase().replace(/[^A-Z2-9]/g, "").slice(0, 4);
-    if (code.length === 4) setLinkCode(code);
-    // Clean the URL but keep the history entry, so Back still works.
+    return code.length === 4 ? code : null;
+  });
+
+  // Strip the code from the URL once we have it, so a refresh after leaving
+  // doesn't silently drag you back into the room. Done in an effect because
+  // history is a side effect, and it must not run during render.
+  useEffect(() => {
+    if (!linkCode) return;
+    if (!window.location.search.includes("room=")) return;
     window.history.replaceState({}, "", window.location.pathname);
-  }, []);
+  }, [linkCode]);
 
   /**
    * Auto-join only when we already know the player's name. A first-time visitor
